@@ -1,0 +1,30 @@
+[
+  {
+    "conname": "stockcurrent_location_not_null",
+    "contype": "n"
+  },
+  {
+    "conname": "stockcurrent_product_not_null",
+    "contype": "n"
+  },
+  {
+    "conname": "stockcurrent_units_not_null",
+    "contype": "n"
+  },
+  {
+    "conname": "stockcurrent_location_product_attributesetinstance_id_key",
+    "contype": "u"
+  },
+  {
+    "conname": "stockcurrent_attributesetinstance_id_fkey",
+    "contype": "f"
+  },
+  {
+    "conname": "stockcurrent_location_fkey",
+    "contype": "f"
+  },
+  {
+    "conname": "stockcurrent_product_fkey",
+    "contype": "f"
+  }
+]

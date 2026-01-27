@@ -1,0 +1,38 @@
+[dotenv@17.2.3] injecting env (8) from .env -- tip: 🔑 add access controls to secrets: https://dotenvx.com/ops
+✓ Connected to PostgreSQL database
+{
+  "last_cxc_tickets": [
+    {
+      "id": 24,
+      "ticketid": 21,
+      "tickettype": 2,
+      "money": "CASH_MONEY",
+      "datenew": "2026-01-16T20:26:02.795Z",
+      "payment_total": "1000.0000"
+    },
+    {
+      "id": 23,
+      "ticketid": 20,
+      "tickettype": 2,
+      "money": "CASH_MONEY",
+      "datenew": "2026-01-16T20:25:44.695Z",
+      "payment_total": "1500.0000"
+    },
+    {
+      "id": 22,
+      "ticketid": 19,
+      "tickettype": 2,
+      "money": "CASH_MONEY",
+      "datenew": "2026-01-16T20:17:20.289Z",
+      "payment_total": "2000.0000"
+    }
+  ],
+  "active_session": {
+    "money": "72ebacac-e50a-46c9-a7b7-ee4489744aa9",
+    "host": "localhost",
+    "hostsequence": 6,
+    "datestart": "2026-01-16T02:06:00.336Z",
+    "dateend": null
+  },
+  "cxc_in_session": 0
+}

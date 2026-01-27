@@ -1,0 +1,122 @@
+[
+  {
+    "column_name": "id",
+    "data_type": "integer",
+    "column_default": "nextval('customers_id_seq'::regclass)"
+  },
+  {
+    "column_name": "searchkey",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "taxid",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "name",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "taxcategory",
+    "data_type": "integer",
+    "column_default": null
+  },
+  {
+    "column_name": "card",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "maxdebt",
+    "data_type": "numeric",
+    "column_default": "0"
+  },
+  {
+    "column_name": "address",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "address2",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "postal",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "city",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "region",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "country",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "firstname",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "lastname",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "email",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "phone",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "phone2",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "fax",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "notes",
+    "data_type": "character varying",
+    "column_default": null
+  },
+  {
+    "column_name": "visible",
+    "data_type": "boolean",
+    "column_default": "true"
+  },
+  {
+    "column_name": "curdate",
+    "data_type": "timestamp without time zone",
+    "column_default": null
+  },
+  {
+    "column_name": "curdebt",
+    "data_type": "numeric",
+    "column_default": null
+  },
+  {
+    "column_name": "discountcategory",
+    "data_type": "integer",
+    "column_default": null
+  }
+]

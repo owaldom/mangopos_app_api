@@ -1,0 +1,4 @@
+[dotenv@17.2.3] injecting env (8) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+Searching for pattern "%vale%" in all tables...
+✓ Connected to PostgreSQL database
+Search complete.

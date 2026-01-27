@@ -1,0 +1,24 @@
+[dotenv@17.2.3] injecting env (8) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+Searching for "Vale" in payments table:
+✓ Connected to PostgreSQL database
+┌─────────┐
+│ (index) │
+├─────────┤
+└─────────┘
+
+Searching for "Vale" in payments_account table:
+┌─────────┐
+│ (index) │
+├─────────┤
+└─────────┘
+
+All distinct payments:
+┌─────────┬───────────┐
+│ (index) │ payment   │
+├─────────┼───────────┤
+│ 0       │ 'debt'    │
+│ 1       │ 'cash'    │
+│ 2       │ 'paper'   │
+│ 3       │ 'Credito' │
+│ 4       │ 'card'    │
+└─────────┴───────────┘
