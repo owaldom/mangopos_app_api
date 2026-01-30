@@ -48,6 +48,8 @@ app.use('/api/daily-expenses', require('./routes/dailyExpenses'));
 app.use('/api/compound-products', require('./routes/compoundsProductsRoutes'));
 app.use('/api/product-kits', require('./routes/productKitsRoutes'));
 app.use('/api/print', require('./routes/print'));
+app.use('/api/reports', require('./routes/reports'));
+app.use('/api/banks', require('./routes/banks'));
 
 
 // Health check

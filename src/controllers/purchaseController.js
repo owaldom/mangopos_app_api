@@ -333,8 +333,8 @@ const purchaseController = {
             // 7. Payments
             for (const p of payments) {
                 const paymentRes = await client.query(
-                    `INSERT INTO paymentspurchase (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid)
-                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
+                    `INSERT INTO paymentspurchase (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)`,
                     [
                         receiptId,
                         p.method,
@@ -344,9 +344,45 @@ const purchaseController = {
                         p.amount_base || p.total,
                         p.bank || null,
                         p.numdocument || null,
-                        p.reference || null
+                        p.reference || null,
+                        p.bank_id || null
                     ]
                 );
+
+                // Create bank transaction if bank_id is provided
+                if (p.bank_id) {
+                    try {
+                        const bankResult = await client.query('SELECT current_balance FROM banks WHERE id = $1', [p.bank_id]);
+                        if (bankResult.rows.length > 0) {
+                            const currentBalance = parseFloat(bankResult.rows[0].current_balance);
+                            const currentAmountBase = p.amount_base || p.total;
+                            const transactionAmount = parseFloat(currentAmountBase);
+                            const newBalance = currentBalance - transactionAmount; // EXPENSE -> Subtract
+
+                            await client.query(`
+                                INSERT INTO bank_transactions (
+                                    bank_id, transaction_type, amount, balance_after,
+                                    reference_type, reference_id, payment_method, description
+                                )
+                                VALUES ($1, 'EXPENSE', $2, $3, 'PURCHASE', $4, $5, $6)
+                            `, [
+                                p.bank_id,
+                                transactionAmount,
+                                newBalance,
+                                receiptId,
+                                p.method,
+                                `Compra #${ticketNumber}`
+                            ]);
+
+                            await client.query(
+                                'UPDATE banks SET current_balance = $1 WHERE id = $2',
+                                [newBalance, p.bank_id]
+                            );
+                        }
+                    } catch (bankError) {
+                        console.error('Error creating bank transaction in purchase:', bankError);
+                    }
+                }
 
                 // Debt Logic (CxP)
                 if (p.method === 'debt' || p.method === 'Credito') {
@@ -455,8 +491,8 @@ const purchaseController = {
 
                 // Insertar en PAYMENTS PURCHASE
                 await client.query(
-                    `INSERT INTO paymentspurchase (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid)
-                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
+                    `INSERT INTO paymentspurchase (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)`,
                     [
                         receiptId,
                         p.method,
@@ -466,9 +502,44 @@ const purchaseController = {
                         currentAmountBase,
                         p.bank || '',
                         p.numdocument || '',
-                        p.reference || ''
+                        p.reference || '',
+                        p.bank_id || null
                     ]
                 );
+
+                // Create bank transaction if bank_id is provided
+                if (p.bank_id) {
+                    try {
+                        const bankResult = await client.query('SELECT current_balance FROM banks WHERE id = $1', [p.bank_id]);
+                        if (bankResult.rows.length > 0) {
+                            const currentBalance = parseFloat(bankResult.rows[0].current_balance);
+                            const transactionAmount = parseFloat(currentAmountBase);
+                            const newBalance = currentBalance - transactionAmount;
+
+                            await client.query(`
+                                INSERT INTO bank_transactions (
+                                    bank_id, transaction_type, amount, balance_after,
+                                    reference_type, reference_id, payment_method, description
+                                )
+                                VALUES ($1, 'EXPENSE', $2, $3, 'PURCHASE', $4, $5, $6)
+                            `, [
+                                p.bank_id,
+                                transactionAmount,
+                                newBalance,
+                                receiptId,
+                                p.method,
+                                `Abono/Pago Compra #${ticketNumber}`
+                            ]);
+
+                            await client.query(
+                                'UPDATE banks SET current_balance = $1 WHERE id = $2',
+                                [newBalance, p.bank_id]
+                            );
+                        }
+                    } catch (bankError) {
+                        console.error('Error creating bank transaction in addPurchasePayment:', bankError);
+                    }
+                }
 
                 // Insertar en PAYMENTSPURCHASE_ACCOUNT (entrada negativa para la factura original si se especifica)
                 if (p.invoice_number) {
