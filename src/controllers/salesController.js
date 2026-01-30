@@ -195,8 +195,8 @@ const salesController = {
                 }
 
                 await client.query(
-                    `INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid)
-                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
+                    `INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)`,
                     [
                         receiptId,
                         p.method,
@@ -206,9 +206,48 @@ const salesController = {
                         currentAmountBase,
                         p.bank || null,
                         p.cedula || null,     // map cedula -> numdocument
-                        p.reference || null   // map reference -> transid
+                        p.reference || null,   // map reference -> transid
+                        p.bank_id || null
                     ]
                 );
+
+                // Create bank transaction if bank_id is provided and payment method requires it
+                if (p.bank_id && ['card', 'paper', 'Debito', 'Credito', 'PagoMovil', 'transfer'].includes(p.method)) {
+                    try {
+                        // Get current bank balance
+                        const bankResult = await client.query('SELECT current_balance FROM banks WHERE id = $1', [p.bank_id]);
+                        if (bankResult.rows.length > 0) {
+                            const currentBalance = parseFloat(bankResult.rows[0].current_balance);
+                            const transactionAmount = parseFloat(currentAmountBase); // Amount in base currency (Bs.)
+                            const newBalance = currentBalance + transactionAmount;
+
+                            // Insert bank transaction
+                            await client.query(`
+                                INSERT INTO bank_transactions (
+                                    bank_id, transaction_type, amount, balance_after,
+                                    reference_type, reference_id, payment_method, description
+                                )
+                                VALUES ($1, 'INCOME', $2, $3, 'SALE', $4, $5, $6)
+                            `, [
+                                p.bank_id,
+                                transactionAmount,
+                                newBalance,
+                                receiptId,
+                                p.method,
+                                `Venta #${ticketId}`
+                            ]);
+
+                            // Update bank balance
+                            await client.query(
+                                'UPDATE banks SET current_balance = $1 WHERE id = $2',
+                                [newBalance, p.bank_id]
+                            );
+                        }
+                    } catch (bankError) {
+                        console.error('Error creating bank transaction:', bankError);
+                        // Don't fail the sale if bank transaction fails, just log it
+                    }
+                }
 
                 // Lógica de Crédito (Deuda)
                 if (p.method === 'debt' || p.method === 'Credito') {
