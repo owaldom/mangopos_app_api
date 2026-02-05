@@ -195,8 +195,8 @@ const salesController = {
                 }
 
                 await client.query(
-                    `INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id)
-                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)`,
+                    `INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id, account_number, is_pago_movil)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)`,
                     [
                         receiptId,
                         p.method,
@@ -207,7 +207,9 @@ const salesController = {
                         p.bank || null,
                         p.cedula || null,     // map cedula -> numdocument
                         p.reference || null,   // map reference -> transid
-                        p.bank_id || null
+                        p.bank_id || null,
+                        p.account || null,
+                        p.is_pago_movil || false
                     ]
                 );
 
@@ -538,16 +540,18 @@ const salesController = {
             // Pagos
             const paymentsQuery = `
                 SELECT 
-                    payment,
-                    total,
-                    currency_id,
-                    exchange_rate,
-                    amount_base_currency,
-                    bank,
-                    numdocument as cedula,
-                    transid as reference
-                FROM payments
-                WHERE receipt = $1
+                    p.payment,
+                    p.total,
+                    p.currency_id,
+                    p.exchange_rate,
+                    p.amount_base_currency,
+                    COALESCE(b.name, p.bank) as bank,
+                    p.bank_id as raw_bank_id,
+                    p.numdocument as cedula,
+                    p.transid as reference
+                FROM payments p
+                LEFT JOIN banks b ON p.bank_id = b.id
+                WHERE p.receipt = $1
             `;
             const paymentsResult = await pool.query(paymentsQuery, [id]);
 
@@ -789,8 +793,8 @@ const salesController = {
 
                 // Insertar en PAYMENTS
                 await client.query(
-                    `INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid)
-                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
+                    `INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id, account_number, is_pago_movil)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)`,
                     [
                         receiptId,
                         p.method,
@@ -800,9 +804,51 @@ const salesController = {
                         p.amount_base || (p.total * systemExchangeRate),
                         p.bank || '',
                         p.cedula || '',
-                        p.reference || ''
+                        p.reference || '',
+                        p.bank_id || null,
+                        p.account || '',
+                        p.is_pago_movil || false
                     ]
                 );
+
+                // Crear transacción bancaria si hay bank_id
+                if (p.bank_id) {
+                    try {
+                        const bankResult = await client.query('SELECT current_balance FROM banks WHERE id = $1', [p.bank_id]);
+                        if (bankResult.rows.length > 0) {
+                            const currentBalance = parseFloat(bankResult.rows[0].current_balance);
+                            const transactionAmount = parseFloat(p.amount_base || (p.total * systemExchangeRate));
+                            const newBalance = currentBalance + (realAmountUSD * (p.currency_id === 2 ? systemExchangeRate : 1)); // Siempre sumar al balance base
+
+                            // Ajuste: El balance de los bancos parece estar en la moneda del banco. 
+                            // Pero para simplificar, usaremos el amount_base que es VES.
+                            const amountForBank = p.amount_base || (p.total * systemExchangeRate);
+                            const finalNewBalance = currentBalance + parseFloat(amountForBank);
+
+                            await client.query(`
+                                INSERT INTO bank_transactions (
+                                    bank_id, transaction_type, amount, balance_after,
+                                    reference_type, reference_id, payment_method, description
+                                )
+                                VALUES ($1, 'INCOME', $2, $3, 'DEBT_PAYMENT', $4, $5, $6)
+                            `, [
+                                p.bank_id,
+                                amountForBank,
+                                finalNewBalance,
+                                receiptId,
+                                p.method,
+                                `Abono Deuda Cliente #${ticketNumber}`
+                            ]);
+
+                            await client.query(
+                                'UPDATE banks SET current_balance = $1 WHERE id = $2',
+                                [finalNewBalance, p.bank_id]
+                            );
+                        }
+                    } catch (bankError) {
+                        console.error('Error actualizando banco en createDebtPayment:', bankError);
+                    }
+                }
 
                 // Insertar en PAYMENTS_ACCOUNT (entrada negativa para la factura original)
                 const originalTicketRes = await client.query(

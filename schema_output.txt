@@ -1,0 +1,31 @@
+Columns in payments table:
+id: integer
+receipt: integer
+payment: character varying
+total: numeric
+currency_id: integer
+exchange_rate: numeric
+amount_base_currency: numeric
+transid: character varying
+returnmsg: bytea
+datenew: timestamp without time zone
+concepto: character varying
+bank: character varying
+numdocument: character varying
+bank_id: character varying
+
+Columns in paymentspurchase table:
+id: integer
+receipt: integer
+payment: character varying
+total: numeric
+currency_id: integer
+exchange_rate: numeric
+amount_base_currency: numeric
+transid: character varying
+returnmsg: bytea
+datenew: timestamp without time zone
+concepto: character varying
+bank: character varying
+numdocument: character varying
+bank_id: character varying

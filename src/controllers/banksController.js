@@ -14,7 +14,8 @@ const banksController = {
                 currency,
                 initial_balance,
                 bank_entity,
-                notes
+                notes,
+                allows_pago_movil
             } = req.body;
 
             // Validation
@@ -25,15 +26,6 @@ const banksController = {
             const id = uuidv4();
             const current_balance = initial_balance || 0;
 
-            const query = `
-                INSERT INTO banks (
-                    id, name, account_number, account_type, currency, 
-                    initial_balance, current_balance, bank_entity, notes, active
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
-                RETURNING *
-            `;
-
             const values = [
                 id,
                 name,
@@ -43,8 +35,21 @@ const banksController = {
                 initial_balance || 0,
                 current_balance,
                 bank_entity || null,
-                notes || null
+                notes || null,
+                req.body.bank_entity_id || null,
+                req.body.account_type_id || null,
+                allows_pago_movil || false
             ];
+
+            const query = `
+                INSERT INTO banks (
+                    id, name, account_number, account_type, currency, 
+                    initial_balance, current_balance, bank_entity, notes, active,
+                    bank_entity_id, account_type_id, allows_pago_movil
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, $10, $11, $12)
+                RETURNING *
+            `;
 
             const result = await pool.query(query, values);
 
@@ -71,15 +76,21 @@ const banksController = {
         try {
             const { active } = req.query;
 
-            let query = 'SELECT * FROM banks';
+            let query = `
+                SELECT b.*, be.name as bank_entity_name, be.logo as bank_entity_logo, 
+                       bat.name as account_type_name
+                FROM banks b
+                LEFT JOIN bank_entities be ON b.bank_entity_id = be.id
+                LEFT JOIN bank_account_types bat ON b.account_type_id = bat.id
+            `;
             const params = [];
 
             if (active !== undefined) {
-                query += ' WHERE active = $1';
+                query += ' WHERE b.active = $1';
                 params.push(active === 'true');
             }
 
-            query += ' ORDER BY name ASC';
+            query += ' ORDER BY b.name ASC';
 
             const result = await pool.query(query, params);
             res.json(result.rows);
@@ -89,12 +100,139 @@ const banksController = {
         }
     },
 
+    // Transfer funds between accounts
+    transferFunds: async (req, res) => {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            const {
+                origin_bank_id,
+                destination_bank_id,
+                amount,
+                exchange_rate,
+                notes
+            } = req.body;
+
+            if (!origin_bank_id || !destination_bank_id || !amount || amount <= 0) {
+                return res.status(400).json({ error: 'Datos de transferencia incompletos o inválidos' });
+            }
+
+            if (origin_bank_id === destination_bank_id) {
+                return res.status(400).json({ error: 'La cuenta origen y destino no pueden ser la misma' });
+            }
+
+            // 1. Get origin bank and check balance
+            const originResult = await client.query('SELECT * FROM banks WHERE id = $1', [origin_bank_id]);
+            if (originResult.rows.length === 0) {
+                throw new Error('Cuenta origen no encontrada');
+            }
+            const originBank = originResult.rows[0];
+            if (parseFloat(originBank.current_balance) < parseFloat(amount)) {
+                throw new Error('Saldo insuficiente en la cuenta origen');
+            }
+
+            // 2. Get destination bank
+            const destResult = await client.query('SELECT * FROM banks WHERE id = $1', [destination_bank_id]);
+            if (destResult.rows.length === 0) {
+                throw new Error('Cuenta destino no encontrada');
+            }
+            const destBank = destResult.rows[0];
+
+            const transferAmount = parseFloat(amount);
+            const rate = parseFloat(exchange_rate) || 1;
+
+            // Calculate destination amount based on currencies
+            let destinationAmount = transferAmount;
+            if (originBank.currency !== destBank.currency) {
+                destinationAmount = transferAmount * rate;
+            }
+
+            const newOriginBalance = parseFloat(originBank.current_balance) - transferAmount;
+            const newDestBalance = parseFloat(destBank.current_balance) + destinationAmount;
+
+            // 3. Update origin balance and record expense
+            await client.query('UPDATE banks SET current_balance = $1 WHERE id = $2', [newOriginBalance, origin_bank_id]);
+            await client.query(`
+                INSERT INTO bank_transactions (
+                    bank_id, transaction_type, amount, balance_after, reference_type, description, notes
+                ) VALUES ($1, 'EXPENSE', $2, $3, 'TRANSFER', $4, $5)
+            `, [origin_bank_id, transferAmount, newOriginBalance, `Transferencia enviada a ${destBank.name}`, notes]);
+
+            // 4. Update destination balance and record income
+            await client.query('UPDATE banks SET current_balance = $1 WHERE id = $2', [newDestBalance, destination_bank_id]);
+            await client.query(`
+                INSERT INTO bank_transactions (
+                    bank_id, transaction_type, amount, balance_after, reference_type, description, notes
+                ) VALUES ($1, 'INCOME', $2, $3, 'TRANSFER', $4, $5)
+            `, [destination_bank_id, destinationAmount, newDestBalance, `Transferencia recibida de ${originBank.name}`, notes]);
+
+            await client.query('COMMIT');
+            res.json({ message: 'Transferencia realizada exitosamente' });
+
+        } catch (err) {
+            await client.query('ROLLBACK');
+            console.error('Error in transferFunds:', err);
+            res.status(500).json({ error: 'Error al realizar transferencia: ' + err.message });
+        } finally {
+            client.release();
+        }
+    },
+
+    // Get banks summary (consolidated totals)
+    getBanksSummary: async (req, res) => {
+        try {
+            const summaryQuery = `
+                SELECT 
+                    currency,
+                    SUM(current_balance) as total_balance,
+                    COUNT(*) as account_count
+                FROM banks
+                WHERE active = true
+                GROUP BY currency
+            `;
+
+            const entityDistributionQuery = `
+                SELECT 
+                    COALESCE(be.name, b.bank_entity, 'Otro') as entity_name,
+                    b.currency,
+                    SUM(b.current_balance) as total_balance
+                FROM banks b
+                LEFT JOIN bank_entities be ON b.bank_entity_id = be.id
+                WHERE b.active = true
+                GROUP BY COALESCE(be.name, b.bank_entity, 'Otro'), b.currency
+                ORDER BY total_balance DESC
+            `;
+
+            const [summaryResult, distributionResult] = await Promise.all([
+                pool.query(summaryQuery),
+                pool.query(entityDistributionQuery)
+            ]);
+
+            res.json({
+                totals: summaryResult.rows,
+                distribution: distributionResult.rows
+            });
+        } catch (err) {
+            console.error('Error in getBanksSummary:', err);
+            res.status(500).json({ error: 'Error al obtener resumen de bancos: ' + err.message });
+        }
+    },
+
     // Get bank by ID
     getBankById: async (req, res) => {
         try {
             const { id } = req.params;
 
-            const result = await pool.query('SELECT * FROM banks WHERE id = $1', [id]);
+            const query = `
+                SELECT b.*, be.name as bank_entity_name, be.logo as bank_entity_logo, 
+                       bat.name as account_type_name
+                FROM banks b
+                LEFT JOIN bank_entities be ON b.bank_entity_id = be.id
+                LEFT JOIN bank_account_types bat ON b.account_type_id = bat.id
+                WHERE b.id = $1
+            `;
+            const result = await pool.query(query, [id]);
 
             if (result.rows.length === 0) {
                 return res.status(404).json({ error: 'Banco no encontrado' });
@@ -118,7 +256,10 @@ const banksController = {
                 currency,
                 bank_entity,
                 notes,
-                active
+                active,
+                bank_entity_id,
+                account_type_id,
+                allows_pago_movil
             } = req.body;
 
             const query = `
@@ -129,8 +270,11 @@ const banksController = {
                     currency = $4,
                     bank_entity = $5,
                     notes = $6,
-                    active = $7
-                WHERE id = $8
+                    active = $7,
+                    bank_entity_id = $8,
+                    account_type_id = $9,
+                    allows_pago_movil = $10
+                WHERE id = $11
                 RETURNING *
             `;
 
@@ -142,6 +286,9 @@ const banksController = {
                 bank_entity,
                 notes,
                 active !== undefined ? active : true,
+                bank_entity_id || null,
+                account_type_id || null,
+                allows_pago_movil || false,
                 id
             ];
 

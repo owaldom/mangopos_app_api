@@ -10,6 +10,12 @@ router.post('/', banksController.createBank);
 // Get all banks (with optional active filter)
 router.get('/', banksController.getAllBanks);
 
+// Get banks summary (consolidated balances)
+router.get('/summary', banksController.getBanksSummary);
+
+// Internal transfer between accounts
+router.post('/transfers', banksController.transferFunds);
+
 // Get bank by ID
 router.get('/:id', banksController.getBankById);
 
