@@ -333,8 +333,8 @@ const purchaseController = {
             // 7. Payments
             for (const p of payments) {
                 const paymentRes = await client.query(
-                    `INSERT INTO paymentspurchase (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id)
-                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)`,
+                    `INSERT INTO paymentspurchase (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id, account_number, is_pago_movil)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)`,
                     [
                         receiptId,
                         p.method,
@@ -345,7 +345,9 @@ const purchaseController = {
                         p.bank || null,
                         p.numdocument || null,
                         p.reference || null,
-                        p.bank_id || null
+                        p.bank_id || null,
+                        p.account || null,
+                        p.is_pago_movil || false
                     ]
                 );
 
@@ -491,8 +493,8 @@ const purchaseController = {
 
                 // Insertar en PAYMENTS PURCHASE
                 await client.query(
-                    `INSERT INTO paymentspurchase (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id)
-                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)`,
+                    `INSERT INTO paymentspurchase (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id, account_number, is_pago_movil)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)`,
                     [
                         receiptId,
                         p.method,
@@ -503,7 +505,9 @@ const purchaseController = {
                         p.bank || '',
                         p.numdocument || '',
                         p.reference || '',
-                        p.bank_id || null
+                        p.bank_id || null,
+                        p.account || '',
+                        p.is_pago_movil || false
                     ]
                 );
 

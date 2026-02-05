@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS bank_transactions (
     payment_method VARCHAR(50),
     description TEXT,
     notes TEXT,
-    created_by VARCHAR(255) REFERENCES people(id),
+    created_by INTEGER REFERENCES people(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

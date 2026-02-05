@@ -191,7 +191,7 @@ const customerController = {
                     p.total as amount,
                     p.amount_base_currency as "amountBs",
                     p.exchange_rate as "exchangeRate",
-                    p.bank,
+                    COALESCE(b.name, p.bank) as bank,
                     p.numdocument as cedula,
                     p.transid as reference,
                     (
@@ -204,6 +204,7 @@ const customerController = {
                 FROM payments p
                 JOIN receipts r ON p.receipt = r.id
                 JOIN tickets t ON t.id = r.id
+                LEFT JOIN banks b ON p.bank_id = b.id
                 WHERE t.customer = $1 AND t.tickettype = 2
             `;
 

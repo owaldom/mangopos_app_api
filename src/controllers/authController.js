@@ -32,7 +32,12 @@ const parsePermissions = (permissionsBuffer) => {
         'com.openbravo.pos.admin.CxPPanel': 'admin.cxp',
         'com.openbravo.pos.admin.ExpensesPanel': 'admin.expenses',
         'com.openbravo.pos.config.JPanelConfiguration': 'system.config',
-        'com.openbravo.pos.panels.JPanelPrinter': 'system.printers'
+        'com.openbravo.pos.panels.JPanelPrinter': 'system.printers',
+        // Banco mappings
+        'com.openbravo.pos.panels.JPanelBanks': 'banks.view',
+        'com.openbravo.pos.panels.JPanelBankReconcile': 'banks.reconcile',
+        'com.openbravo.pos.panels.JPanelBankEntities': 'banks.config',
+        'com.openbravo.pos.panels.JPanelBankAccountTypes': 'banks.config'
     };
 
     while ((match = regex.exec(xml)) !== null) {

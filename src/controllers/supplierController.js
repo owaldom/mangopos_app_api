@@ -262,7 +262,7 @@ const supplierController = {
                         ELSE p.total
                     END as "amountBs",
                     p.exchange_rate as "exchangeRate",
-                    p.bank,
+                    COALESCE(b.name, p.bank) as bank,
                     p.numdocument as cedula,
                     p.transid as reference,
                     (
@@ -275,6 +275,7 @@ const supplierController = {
                 FROM paymentspurchase p
                 JOIN receiptspurchase r ON p.receipt = r.id
                 JOIN ticketspurchase t ON t.id = r.id
+                LEFT JOIN banks b ON p.bank_id = b.id
                 WHERE t.supplier = $1 AND t.tickettype = 2
                 ORDER BY p.datenew DESC
             `;

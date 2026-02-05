@@ -50,6 +50,8 @@ app.use('/api/product-kits', require('./routes/productKitsRoutes'));
 app.use('/api/print', require('./routes/print'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/banks', require('./routes/banks'));
+app.use('/api/bank-entities', require('./routes/bankEntities'));
+app.use('/api/bank-account-types', require('./routes/bankAccountTypes'));
 
 
 // Health check
