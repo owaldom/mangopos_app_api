@@ -763,7 +763,7 @@ const reportsController = {
                     WHERE tl2.receipt = r.id AND tx2.name ILIKE '%igtf%'
                     LIMIT 1
                 ) igtf_tax ON true
-                WHERE r.currency_id = 2
+                WHERE (r.currency_id = 2 OR igtf_tax.amount > 0)
                   AND t.tickettype = 0
                   AND r.datenew BETWEEN $1 AND $2
             `;
