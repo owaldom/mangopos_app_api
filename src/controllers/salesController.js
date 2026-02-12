@@ -4,6 +4,9 @@ const salesController = {
     // Obtener catálogo (categorías y productos)
     getCatalog: async (req, res) => {
         try {
+            const { locationId } = req.query;
+            const locId = locationId || 1;
+
             // Obtener todas las categorías con imagen (filtrar por visibilidad en POS)
             const categoriesRes = await pool.query('SELECT id, name, parentid, image, visible_in_pos FROM categories WHERE visible_in_pos = true ORDER BY name');
 
@@ -16,12 +19,12 @@ const salesController = {
                 FROM products p
                 LEFT JOIN products_cat pc ON p.id = pc.product
                 LEFT JOIN taxes t ON p.taxcat = t.category
-                LEFT JOIN stockcurrent s ON p.id = s.product AND s.location = 1
+                LEFT JOIN stockcurrent s ON p.id = s.product AND s.location = $1
                 WHERE p.marketable = true
                 GROUP BY p.id, p.reference, p.code, p.name, p.pricebuy, p.pricesell, p.category, p.taxcat, 
                          p.isscale, p.iscom, p.typeproduct, p.servicio, p.marketable, t.rate, t.id, p.image, pc.product
                 ORDER BY p.name
-            `);
+            `, [locId]);
 
             // Convertir imágenes de categorías de Buffer a Base64
             const categories = categoriesRes.rows.map(cat => ({
@@ -69,8 +72,11 @@ const salesController = {
                 cash_register_id,
                 currency_id,
                 exchange_rate,
-                money_id
+                money_id,
+                location_id
             } = req.body;
+
+            const locId = location_id || 1;
 
             await client.query('BEGIN');
 
@@ -134,16 +140,16 @@ const salesController = {
                         // Verificar si es producto compuesto
                         if (typeProduct === 'CO') {
                             // Procesar producto compuesto
-                            await processCompoundProductStock(client, line.product_id, line.units, line.price, ticketNumber);
+                            await processCompoundProductStock(client, line.product_id, line.units, line.price, ticketNumber, locId);
                         } else if (typeProduct === 'KI') {
                             // Procesar Kit (Combo)
-                            await processKitStock(client, line.product_id, line.units, line.selectedComponents, ticketNumber);
+                            await processKitStock(client, line.product_id, line.units, line.selectedComponents, ticketNumber, locId);
                         } else {
                             // Producto normal - procesar stock normalmente
                             // Obtener stock actual con bloqueo (FOR UPDATE) para evitar race conditions
                             const stockRes = await client.query(
-                                'SELECT SUM(units) as total FROM stockcurrent WHERE location = 1 AND product = $1',
-                                [line.product_id]
+                                'SELECT SUM(units) as total FROM stockcurrent WHERE location = $1 AND product = $2',
+                                [locId, line.product_id]
                             );
                             const currentStock = parseFloat(stockRes.rows[0]?.total || 0);
 
@@ -154,17 +160,17 @@ const salesController = {
                             // Restar del stock actual
                             await client.query(
                                 `INSERT INTO stockcurrent (location, product, units)
-                                 VALUES (1, $1, $2)
+                                 VALUES ($1, $2, $3)
                                  ON CONFLICT (location, product, attributesetinstance_id) 
-                                 DO UPDATE SET units = stockcurrent.units + $2`,
-                                [line.product_id, -line.units]
+                                 DO UPDATE SET units = stockcurrent.units + $3`,
+                                [locId, line.product_id, -line.units]
                             );
 
                             // Registrar en Diario de Stock (reason = -1 para Venta)
                             await client.query(
                                 `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-                                 VALUES (NOW(), -1, 1, $1, $2, $3, $4)`,
-                                [line.product_id, -line.units, line.price, `Venta Ticket #${ticketNumber}`]
+                                 VALUES (NOW(), -1, $1, $2, $3, $4, $5)`,
+                                [locId, line.product_id, -line.units, line.price, `Venta Ticket #${ticketNumber}`]
                             );
                         }
                     }
@@ -590,8 +596,11 @@ const salesController = {
                 refund_payment_method,
                 cash_register_id,
                 currency_id,
-                exchange_rate
+                exchange_rate,
+                location_id
             } = req.body;
+
+            const locId = location_id || 1;
 
             await client.query('BEGIN');
 
@@ -681,17 +690,17 @@ const salesController = {
                     // Devolver stock
                     await client.query(
                         `INSERT INTO stockcurrent (location, product, units)
-                         VALUES (1, $1, $2)
+                         VALUES ($1, $2, $3)
                          ON CONFLICT (location, product, attributesetinstance_id) 
-                         DO UPDATE SET units = stockcurrent.units + $2`,
-                        [line.product_id, -units] // Sumar de vuelta (units es negativo)
+                         DO UPDATE SET units = stockcurrent.units + $3`,
+                        [locId, line.product_id, -units] // Sumar de vuelta (units es negativo)
                     );
 
                     // Registrar en diario de stock (reason = 1 para devolución)
                     await client.query(
                         `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-                         VALUES (NOW(), 1, 1, $1, $2, $3, $4)`,
-                        [line.product_id, -units, line.price, `Devolución Ticket #${ticketNumber} (Original: #${originalTicket.rows[0].ticketid})`]
+                         VALUES (NOW(), 1, $1, $2, $3, $4, $5)`,
+                        [locId, line.product_id, -units, line.price, `Devolución Ticket #${ticketNumber} (Original: #${originalTicket.rows[0].ticketid})`]
                     );
                 }
             }
@@ -904,7 +913,7 @@ const salesController = {
 };
 
 // Helper function to process compound product stock
-async function processCompoundProductStock(client, productId, quantity, price, ticketNumber) {
+async function processCompoundProductStock(client, productId, quantity, price, ticketNumber, locId) {
     try {
         // 1. Obtener todos los insumos del producto compuesto
         const insumosQuery = `
@@ -930,8 +939,8 @@ async function processCompoundProductStock(client, productId, quantity, price, t
 
             // Validar stock del insumo
             const stockRes = await client.query(
-                'SELECT COALESCE(SUM(units), 0) as stock FROM stockcurrent WHERE product = $1',
-                [insumo.idinsumo]
+                'SELECT COALESCE(SUM(units), 0) as stock FROM stockcurrent WHERE product = $1 AND location = $2',
+                [insumo.idinsumo, locId]
             );
             const currentStock = parseFloat(stockRes.rows[0].stock);
 
@@ -949,17 +958,17 @@ async function processCompoundProductStock(client, productId, quantity, price, t
             // Registrar salida del insumo (OUT_SALE)
             await client.query(
                 `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-                 VALUES (NOW(), -1, 1, $1, $2, $3, $4)`,
-                [insumo.idinsumo, -requiredQuantity, insumoPrice, `Venta Producto Compuesto - Ticket #${ticketNumber}`]
+                 VALUES (NOW(), -1, $1, $2, $3, $4, $5)`,
+                [locId, insumo.idinsumo, -requiredQuantity, insumoPrice, `Venta Producto Compuesto - Ticket #${ticketNumber}`]
             );
 
             // Actualizar stock del insumo
             await client.query(
                 `INSERT INTO stockcurrent (location, product, units)
-                 VALUES (1, $1, $2)
+                 VALUES ($1, $2, $3)
                  ON CONFLICT (location, product, attributesetinstance_id) 
-                 DO UPDATE SET units = stockcurrent.units + $2`,
-                [insumo.idinsumo, -requiredQuantity]
+                 DO UPDATE SET units = stockcurrent.units + $3`,
+                [locId, insumo.idinsumo, -requiredQuantity]
             );
         }
 
@@ -974,15 +983,15 @@ async function processCompoundProductStock(client, productId, quantity, price, t
         // 4. Registrar entrada del producto compuesto (IN_PURCHASE - fabricación)
         await client.query(
             `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-             VALUES (NOW(), 1, 1, $1, $2, $3, $4)`,
-            [productId, quantity, priceBuy, `Fabricación Producto Compuesto - Ticket #${ticketNumber}`]
+             VALUES (NOW(), 1, $1, $2, $3, $4, $5)`,
+            [locId, productId, quantity, priceBuy, `Fabricación Producto Compuesto - Ticket #${ticketNumber}`]
         );
 
         // 5. Registrar salida del producto compuesto (OUT_SALE)
         await client.query(
             `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-             VALUES (NOW(), -1, 1, $1, $2, $3, $4)`,
-            [productId, -quantity, priceSell, `Venta Ticket #${ticketNumber}`]
+             VALUES (NOW(), -1, $1, $2, $3, $4, $5)`,
+            [locId, productId, -quantity, priceSell, `Venta Ticket #${ticketNumber}`]
         );
 
         // Nota: No actualizamos stockcurrent del producto compuesto porque
@@ -1047,7 +1056,7 @@ async function calculateUnitFactor(client, insumoId, productId, productQuantity)
 }
 
 // Helper function to process Kit (Combo) stock
-async function processKitStock(client, kitId, kitQuantity, selectedComponents, ticketNumber) {
+async function processKitStock(client, kitId, kitQuantity, selectedComponents, ticketNumber, locId) {
     try {
         let componentsToProcess = [];
 
@@ -1078,8 +1087,8 @@ async function processKitStock(client, kitId, kitQuantity, selectedComponents, t
 
             // Validar stock del componente
             const stockRes = await client.query(
-                'SELECT COALESCE(SUM(units), 0) as stock FROM stockcurrent WHERE product = $1 AND location = 1',
-                [comp.component_id]
+                'SELECT COALESCE(SUM(units), 0) as stock FROM stockcurrent WHERE product = $1 AND location = $2',
+                [comp.component_id, locId]
             );
             const currentStock = parseFloat(stockRes.rows[0].stock);
 
@@ -1093,17 +1102,17 @@ async function processKitStock(client, kitId, kitQuantity, selectedComponents, t
             // Registrar salida del componente (OUT_SALE)
             await client.query(
                 `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-                 VALUES (NOW(), -1, 1, $1, $2, (SELECT pricesell FROM products WHERE id = $1), $3)`,
-                [comp.component_id, -finalQuantity, `Salida Kit #${kitId} - Ticket #${ticketNumber}`]
+                 VALUES (NOW(), -1, $1, $2, (SELECT pricesell FROM products WHERE id = $2), $3)`,
+                [locId, comp.component_id, `Salida Kit #${kitId} - Ticket #${ticketNumber}`]
             );
 
             // Actualizar stock del componente
             await client.query(
                 `INSERT INTO stockcurrent (location, product, units)
-                 VALUES (1, $1, $2)
+                 VALUES ($1, $2, $3)
                  ON CONFLICT (location, product, attributesetinstance_id) 
-                 DO UPDATE SET units = stockcurrent.units + $2`,
-                [comp.component_id, -finalQuantity]
+                 DO UPDATE SET units = stockcurrent.units + $3`,
+                [locId, comp.component_id, -finalQuantity]
             );
         }
     } catch (err) {
