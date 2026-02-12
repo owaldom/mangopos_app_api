@@ -22,10 +22,17 @@ const settingsController = {
             await client.query('BEGIN');
 
             for (const [id, value] of Object.entries(settings)) {
-                await client.query(
+                const result = await client.query(
                     'UPDATE settings SET value = $1 WHERE id = $2',
                     [value.toString(), id]
                 );
+
+                if (result.rowCount === 0) {
+                    await client.query(
+                        'INSERT INTO settings (id, value, description) VALUES ($1, $2, $3)',
+                        [id, value.toString(), 'Setting ' + id]
+                    );
+                }
             }
 
             await client.query('COMMIT');

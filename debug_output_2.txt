@@ -1,0 +1,3 @@
+[dotenv@17.2.3] injecting env (8) from .env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+Connected to database
+--- Receipts Columns ---
