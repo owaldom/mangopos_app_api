@@ -52,6 +52,8 @@ app.use('/api/reports', require('./routes/reports'));
 app.use('/api/banks', require('./routes/banks'));
 app.use('/api/bank-entities', require('./routes/bankEntities'));
 app.use('/api/bank-account-types', require('./routes/bankAccountTypes'));
+app.use('/api/locations', require('./routes/locations'));
+app.use('/api/distribution-orders', require('./routes/distributionOrders'));
 
 
 // Health check

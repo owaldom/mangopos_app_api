@@ -18,10 +18,15 @@ const productController = {
             const marketable = req.query.marketable;
             const iscom = req.query.iscom;
             const incatalog = req.query.incatalog;
+            const locationId = req.query.locationId;
 
             let queryParams = [];
             let whereConditions = [];
             let paramIndex = 1;
+
+            // locationId is handled inside the data query for stock_current, 
+            // no longer as a strict filter for the product list (EXISTS)
+            // to allow adding stock to products without current inventory.
 
             if (search) {
                 whereConditions.push(`(p.name ILIKE $${paramIndex} OR p.code ILIKE $${paramIndex} OR p.reference ILIKE $${paramIndex})`);
@@ -101,11 +106,19 @@ const productController = {
             const countResult = await pool.query(countQuery, queryParams);
             const total = parseInt(countResult.rows[0].count);
 
+            // Preparar el sub-filtro de ubicación para la consulta de datos
+            let stockLocationFilter = '';
+            if (locationId && locationId !== 'null' && locationId !== '0') {
+                stockLocationFilter = `AND location = $${paramIndex}`;
+                queryParams.push(locationId);
+                paramIndex++;
+            }
+
             // Data Query
             let query = `
                 SELECT p.*, c.name as category_name, t.name as tax_name,
                 CASE WHEN pc.product IS NOT NULL THEN true ELSE false END as incatalog,
-                (SELECT COALESCE(SUM(units), 0) FROM stockcurrent WHERE product = p.id) as stock_current,
+                (SELECT COALESCE(SUM(units), 0) FROM stockcurrent WHERE product = p.id ${stockLocationFilter}) as stock_current,
                 p.servicio
                 FROM products p
                 LEFT JOIN categories c ON p.category = c.id
