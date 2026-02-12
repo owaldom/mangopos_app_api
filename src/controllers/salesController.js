@@ -7,13 +7,14 @@ const salesController = {
             const { locationId } = req.query;
             const locId = locationId || 1;
 
-            // Obtener todas las categorías con imagen (filtrar por visibilidad en POS)
             const categoriesRes = await pool.query('SELECT id, name, parentid, image, visible_in_pos FROM categories WHERE visible_in_pos = true ORDER BY name');
 
-            // Obtener productos marcados como 'marketable' (venta)
             const productsRes = await pool.query(`
                 SELECT p.id, p.reference, p.code, p.name, p.pricebuy, p.pricesell, p.category, p.taxcat, 
-                       p.isscale, p.iscom, p.typeproduct, p.servicio, p.marketable, t.rate as tax_rate, t.id as tax_id, p.image,
+                       p.isscale, p.iscom, p.typeproduct, p.servicio, p.marketable, 
+                       COALESCE(t.rate, 0) as tax_rate, 
+                       COALESCE(t.id, '000') as tax_id, 
+                       p.image,
                        CASE WHEN pc.product IS NOT NULL THEN true ELSE false END as incatalog,
                        COALESCE(SUM(s.units), 0) as stock
                 FROM products p
@@ -26,13 +27,11 @@ const salesController = {
                 ORDER BY p.name
             `, [locId]);
 
-            // Convertir imágenes de categorías de Buffer a Base64
             const categories = categoriesRes.rows.map(cat => ({
                 ...cat,
                 image: cat.image ? cat.image.toString('base64') : null
             }));
 
-            // Convertir imágenes de productos de Buffer a Base64
             const products = productsRes.rows.map(prod => ({
                 ...prod,
                 image: prod.image ? prod.image.toString('base64') : null
@@ -48,7 +47,6 @@ const salesController = {
         }
     },
 
-    // Obtener monedas y tasas de cambio
     getCurrencies: async (req, res) => {
         try {
             const result = await pool.query('SELECT id, code, name, symbol, exchange_rate, is_base FROM currencies WHERE active = true ORDER BY is_base DESC');
@@ -59,7 +57,6 @@ const salesController = {
         }
     },
 
-    // Crear una venta (Receipt, Ticket, Lines, Payments, Stock)
     createSale: async (req, res) => {
         const client = await pool.connect();
         try {
@@ -73,18 +70,18 @@ const salesController = {
                 currency_id,
                 exchange_rate,
                 money_id,
-                location_id
+                location_id,
+                igtf_amount,
+                igtf_amount_alt
             } = req.body;
 
             const locId = location_id || 1;
 
             await client.query('BEGIN');
 
-            // 1. Obtener y actualizar el número de ticket correlativo
             const ticketNumRes = await client.query('UPDATE ticketsnum SET id = id + 1 RETURNING id');
             const ticketNumber = ticketNumRes.rows[0].id;
 
-            // 2. Insertar Receipt
             const receiptRes = await client.query(
                 `INSERT INTO receipts (money, cash_register_id, currency_id, exchange_rate, datenew) 
                  VALUES ($1, $2, $3, $4, NOW()) RETURNING id`,
@@ -92,15 +89,12 @@ const salesController = {
             );
             const receiptId = receiptRes.rows[0].id;
 
-            // 3. Insertar Ticket
             const ticketRes = await client.query(
                 `INSERT INTO tickets (id, tickettype, ticketid, person, customer, cash_register_id, currency_id, status)
                  VALUES ($1, 0, $2, $3, $4, $5, $6, 0) RETURNING id`,
                 [receiptId, ticketNumber, person_id, customer_id || null, cash_register_id || null, currency_id || 1]
             );
 
-            // 4. Insertar Líneas e Impuestos por línea (taxlines se suele resumir al final, pero Openbravo lo hace por línea o por ticket)
-            // Para simplificar seguiremos la lógica de ticketlines y guardaremos el resumen en taxlines
             const taxSummary = {};
 
             for (let i = 0; i < lines.length; i++) {
@@ -111,18 +105,15 @@ const salesController = {
                     [receiptId, i, line.product_id, line.units, line.price, line.taxid, line.discountid || '001']
                 );
 
-                // Acumular para taxlines
                 if (!taxSummary[line.taxid]) {
-                    taxSummary[line.taxid] = { base: 0, amount: 0, rate: line.tax_rate };
+                    taxSummary[line.taxid] = { base: 0, amount: 0, rate: parseFloat(line.tax_rate || 0) };
                 }
-                const base = line.units * line.price;
-                const amount = base * line.tax_rate;
+                const base = parseFloat(line.units || 0) * parseFloat(line.price || 0);
+                const amount = base * parseFloat(line.tax_rate || 0);
                 taxSummary[line.taxid].base += base;
                 taxSummary[line.taxid].amount += amount;
 
-                // 5. Validar y Actualizar Stock
                 if (line.product_id) {
-                    // Obtener información del producto
                     const productCheck = await client.query(
                         'SELECT p.servicio, p.iscom, p.typeproduct FROM products p WHERE p.id = $1',
                         [line.product_id]
@@ -137,16 +128,11 @@ const salesController = {
                     const typeProduct = productCheck.rows[0]?.typeproduct;
 
                     if (!isService) {
-                        // Verificar si es producto compuesto
                         if (typeProduct === 'CO') {
-                            // Procesar producto compuesto
                             await processCompoundProductStock(client, line.product_id, line.units, line.price, ticketNumber, locId);
                         } else if (typeProduct === 'KI') {
-                            // Procesar Kit (Combo)
                             await processKitStock(client, line.product_id, line.units, line.selectedComponents, ticketNumber, locId);
                         } else {
-                            // Producto normal - procesar stock normalmente
-                            // Obtener stock actual con bloqueo (FOR UPDATE) para evitar race conditions
                             const stockRes = await client.query(
                                 'SELECT SUM(units) as total FROM stockcurrent WHERE location = $1 AND product = $2',
                                 [locId, line.product_id]
@@ -157,7 +143,6 @@ const salesController = {
                                 throw new Error(`Stock insuficiente para el producto ${line.product_name || line.product_id}. Disponible: ${currentStock}, Requerido: ${line.units}`);
                             }
 
-                            // Restar del stock actual
                             await client.query(
                                 `INSERT INTO stockcurrent (location, product, units)
                                  VALUES ($1, $2, $3)
@@ -166,7 +151,6 @@ const salesController = {
                                 [locId, line.product_id, -line.units]
                             );
 
-                            // Registrar en Diario de Stock (reason = -1 para Venta)
                             await client.query(
                                 `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
                                  VALUES (NOW(), -1, $1, $2, $3, $4, $5)`,
@@ -187,14 +171,32 @@ const salesController = {
                 );
             }
 
+            // Recording IGTF if applicable
+            if (igtf_amount > 0) {
+                let igtfTaxId = null;
+                const igtfTaxRes = await client.query("SELECT id FROM taxes WHERE name ILIKE '%igtf%' LIMIT 1");
+                if (igtfTaxRes.rows.length > 0) {
+                    igtfTaxId = igtfTaxRes.rows[0].id;
+                } else {
+                    const newIgtfTax = await client.query(
+                        "INSERT INTO taxes (name, rate, validfrom, category) VALUES ('IGTF 3%', 0.03, NOW(), (SELECT id FROM taxcategories LIMIT 1)) RETURNING id"
+                    );
+                    igtfTaxId = newIgtfTax.rows[0].id;
+                }
+
+                await client.query(
+                    `INSERT INTO taxlines (receipt, taxid, percentage, base, amount, datenew)
+                     VALUES ($1, $2, $3, $4, $5, NOW())`,
+                    [receiptId, igtfTaxId, 0.03, (igtf_amount / 0.03), igtf_amount]
+                );
+            }
+
             // 7. Insertar Payments
             for (const p of payments) {
                 const currentCurrencyId = p.currency_id || currency_id || 1;
                 let currentExchangeRate = p.exchange_rate || exchange_rate || 1.0;
                 let currentAmountBase = p.amount_base || p.total;
 
-                // Si el pago es en USD, la tasa para convertirlo a USD es 1.0
-                // Y nos aseguramos que amount_base_currency sea el equivalente en Bs.
                 if (currentCurrencyId === 2) {
                     currentAmountBase = p.total * (exchange_rate || 1.0);
                     currentExchangeRate = 1.0;
@@ -211,25 +213,22 @@ const salesController = {
                         currentExchangeRate,
                         currentAmountBase,
                         p.bank || null,
-                        p.cedula || null,     // map cedula -> numdocument
-                        p.reference || null,   // map reference -> transid
+                        p.cedula || null,
+                        p.reference || null,
                         p.bank_id || null,
                         p.account || null,
                         p.is_pago_movil || false
                     ]
                 );
 
-                // Create bank transaction if bank_id is provided and payment method requires it
                 if (p.bank_id && ['card', 'paper', 'Debito', 'Credito', 'PagoMovil', 'transfer'].includes(p.method)) {
                     try {
-                        // Get current bank balance
                         const bankResult = await client.query('SELECT current_balance FROM banks WHERE id = $1', [p.bank_id]);
                         if (bankResult.rows.length > 0) {
                             const currentBalance = parseFloat(bankResult.rows[0].current_balance);
-                            const transactionAmount = parseFloat(currentAmountBase); // Amount in base currency (Bs.)
+                            const transactionAmount = parseFloat(currentAmountBase);
                             const newBalance = currentBalance + transactionAmount;
 
-                            // Insert bank transaction
                             await client.query(`
                                 INSERT INTO bank_transactions (
                                     bank_id, transaction_type, amount, balance_after,
@@ -242,10 +241,9 @@ const salesController = {
                                 newBalance,
                                 receiptId,
                                 p.method,
-                                `Venta #${ticketId}`
+                                `Venta #${ticketNumber}`
                             ]);
 
-                            // Update bank balance
                             await client.query(
                                 'UPDATE banks SET current_balance = $1 WHERE id = $2',
                                 [newBalance, p.bank_id]
@@ -253,17 +251,14 @@ const salesController = {
                         }
                     } catch (bankError) {
                         console.error('Error creating bank transaction:', bankError);
-                        // Don't fail the sale if bank transaction fails, just log it
                     }
                 }
 
-                // Lógica de Crédito (Deuda)
                 if (p.method === 'debt' || p.method === 'Credito') {
                     if (!customer_id) {
                         throw new Error('Debe seleccionar un cliente para realizar una venta a crédito.');
                     }
 
-                    // 1. Obtener datos actuales del cliente para validación
                     const customerRes = await client.query(
                         'SELECT maxdebt, curdebt FROM customers WHERE id = $1 FOR UPDATE',
                         [customer_id]
@@ -274,23 +269,18 @@ const salesController = {
                     }
 
                     const { maxdebt, curdebt } = customerRes.rows[0];
-                    // Lógica CxC en Dólares: Convertir el abono a USD para guardar en curdebt
-                    // Si ya es USD (currentCurrencyId === 2), amountInUSD = p.total
                     const amountInUSD = currentCurrencyId === 2 ? p.total : (currentAmountBase / currentExchangeRate);
                     const newDebtUSD = parseFloat(curdebt || 0) + amountInUSD;
 
-                    // 2. Validar límite de crédito (maxdebt en USD vs newDebt en USD)
                     if (maxdebt > 0 && newDebtUSD > (parseFloat(maxdebt) + 0.01)) {
                         throw new Error(`Límite de crédito excedido. Límite: $ ${maxdebt}, Deuda actual + nueva (en USD): $ ${newDebtUSD.toFixed(2)}`);
                     }
 
-                    // 3. Actualizar cliente (curdebt ahora almacena USD)
                     await client.query(
                         'UPDATE customers SET curdebt = $1, curdate = NOW() WHERE id = $2',
                         [newDebtUSD, customer_id]
                     );
 
-                    // 4. Insertar en payments_account
                     let debtExchangeRate = currentExchangeRate;
                     if (p.currency_id === 2) debtExchangeRate = 1.0;
 
@@ -328,7 +318,6 @@ const salesController = {
         }
     },
 
-    // Obtener historial de ventas con filtros
     getSalesHistory: async (req, res) => {
         try {
             const {
@@ -365,7 +354,6 @@ const salesController = {
             const params = [];
             let paramCount = 1;
 
-            // Filtros
             if (startDate) {
                 query += ` AND r.datenew >= $${paramCount}`;
                 params.push(startDate);
@@ -396,12 +384,6 @@ const salesController = {
                 paramCount++;
             }
 
-            query += `
-                -- No group by needed since we removed aggregate functions in main select
-            `;
-
-            // Filtros por total (después del GROUP BY)
-            // Se multiplica por exchange_rate para comparar en Bolívares
             const havingConditions = [];
             const totalInBs = `((SELECT COALESCE(SUM(pay.total), 0) FROM payments pay WHERE pay.receipt = r.id) * COALESCE(r.exchange_rate, 1))`;
 
@@ -417,14 +399,12 @@ const salesController = {
 
             query += ` ORDER BY r.datenew DESC`;
 
-            // Paginación
             const offset = (page - 1) * limit;
             query += ` LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
             params.push(limit, offset);
 
             const result = await pool.query(query, params);
 
-            // Contar total de registros
             let countQuery = `
                 SELECT COUNT(DISTINCT t.id) as total
                 FROM tickets t
@@ -479,12 +459,10 @@ const salesController = {
         }
     },
 
-    // Obtener detalles completos de un ticket
     getTicketById: async (req, res) => {
         try {
             const { id } = req.params;
 
-            // Información del ticket
             const ticketQuery = `
                 SELECT 
                     t.id,
@@ -521,7 +499,6 @@ const salesController = {
 
             const ticket = ticketResult.rows[0];
 
-            // Líneas del ticket
             const linesQuery = `
                 SELECT 
                     tl.line,
@@ -543,7 +520,6 @@ const salesController = {
             `;
             const linesResult = await pool.query(linesQuery, [id]);
 
-            // Pagos
             const paymentsQuery = `
                 SELECT 
                     p.payment,
@@ -561,7 +537,6 @@ const salesController = {
             `;
             const paymentsResult = await pool.query(paymentsQuery, [id]);
 
-            // Resumen de impuestos
             const taxesQuery = `
                 SELECT 
                     taxid,
@@ -585,14 +560,13 @@ const salesController = {
         }
     },
 
-    // Procesar devolución/reembolso
     processRefund: async (req, res) => {
         const client = await pool.connect();
         try {
-            const { id } = req.params; // ID del ticket original
+            const { id } = req.params;
             const {
                 person_id,
-                refund_lines, // Array de { product_id, units, price, taxid, tax_rate }
+                refund_lines,
                 refund_payment_method,
                 cash_register_id,
                 currency_id,
@@ -604,38 +578,20 @@ const salesController = {
 
             await client.query('BEGIN');
 
-            // Verificar que el ticket original existe
-            const originalTicket = await client.query(
-                'SELECT * FROM tickets WHERE id = $1',
-                [id]
-            );
+            const originalTicketRes = await client.query('SELECT * FROM tickets WHERE id = $1', [id]);
+            if (originalTicketRes.rows.length === 0) throw new Error('Ticket original no encontrado');
 
-            if (originalTicket.rows.length === 0) {
-                throw new Error('Ticket original no encontrado');
-            }
+            const originalLines = await client.query('SELECT product, units FROM ticketlines WHERE ticket = $1', [id]);
 
-            // Obtener líneas originales para validar
-            const originalLines = await client.query(
-                'SELECT product, units FROM ticketlines WHERE ticket = $1',
-                [id]
-            );
-
-            // Validar que no se devuelvan más unidades de las vendidas
             for (const refundLine of refund_lines) {
                 const originalLine = originalLines.rows.find(l => l.product === refundLine.product_id);
-                if (!originalLine) {
-                    throw new Error(`Producto ${refundLine.product_id} no encontrado en ticket original`);
-                }
-                if (Math.abs(refundLine.units) > originalLine.units) {
-                    throw new Error(`No se pueden devolver más unidades de las vendidas para producto ${refundLine.product_id}`);
-                }
+                if (!originalLine) throw new Error(`Producto ${refundLine.product_id} no encontrado en ticket original`);
+                if (Math.abs(refundLine.units) > originalLine.units) throw new Error(`No se pueden devolver más unidades de las vendidas`);
             }
 
-            // Obtener y actualizar número de ticket
             const ticketNumRes = await client.query('UPDATE ticketsnum SET id = id + 1 RETURNING id');
             const ticketNumber = ticketNumRes.rows[0].id;
 
-            // Crear Receipt para la devolución
             const receiptRes = await client.query(
                 `INSERT INTO receipts (money, cash_register_id, currency_id, exchange_rate, datenew) 
                  VALUES ($1, $2, $3, $4, NOW()) RETURNING id`,
@@ -643,20 +599,20 @@ const salesController = {
             );
             const receiptId = receiptRes.rows[0].id;
 
-            // Crear Ticket de devolución (tickettype = 1 para devoluciones)
             await client.query(
                 `INSERT INTO tickets (id, tickettype, ticketid, person, customer, cash_register_id, currency_id, status)
                  VALUES ($1, 1, $2, $3, $4, $5, $6, 0)`,
-                [receiptId, ticketNumber, person_id, originalTicket.rows[0].customer, cash_register_id || null, currency_id || 1]
+                [receiptId, ticketNumber, person_id, originalTicketRes.rows[0].customer, cash_register_id || null, currency_id || 1]
             );
 
-            // Insertar líneas de devolución (con cantidades negativas)
             const taxSummary = {};
             let totalRefund = 0;
 
             for (let i = 0; i < refund_lines.length; i++) {
                 const line = refund_lines[i];
-                const units = -Math.abs(line.units); // Asegurar que sea negativo
+                const units = -Math.abs(line.units);
+                const lineTotal = units * line.price;
+                totalRefund += lineTotal * (1 + (line.tax_rate || 0));
 
                 await client.query(
                     `INSERT INTO ticketlines (ticket, line, product, units, price, taxid, discountid)
@@ -664,73 +620,30 @@ const salesController = {
                     [receiptId, i, line.product_id, units, line.price, line.taxid, '001']
                 );
 
-                // Acumular impuestos
-                if (!taxSummary[line.taxid]) {
-                    taxSummary[line.taxid] = { base: 0, amount: 0, rate: line.tax_rate };
-                }
+                if (!taxSummary[line.taxid]) taxSummary[line.taxid] = { base: 0, amount: 0, rate: line.tax_rate };
                 const base = units * line.price;
                 const amount = base * line.tax_rate;
                 taxSummary[line.taxid].base += base;
                 taxSummary[line.taxid].amount += amount;
 
-                // Devolver stock y Registrar en diario
-                // Check if product is service
-                const productCheck = await client.query(
-                    'SELECT p.servicio, p.iscom FROM products p WHERE p.id = $1',
-                    [line.product_id]
-                );
-
-                const isService = productCheck.rows.length > 0 && (
-                    productCheck.rows[0].servicio === '1' ||
-                    productCheck.rows[0].servicio === true ||
-                    productCheck.rows[0].servicio === 'true'
-                );
+                const productCheck = await client.query('SELECT p.servicio, p.iscom FROM products p WHERE p.id = $1', [line.product_id]);
+                const isService = productCheck.rows.length > 0 && (productCheck.rows[0].servicio === '1' || productCheck.rows[0].servicio === true);
 
                 if (!isService) {
-                    // Devolver stock
-                    await client.query(
-                        `INSERT INTO stockcurrent (location, product, units)
-                         VALUES ($1, $2, $3)
-                         ON CONFLICT (location, product, attributesetinstance_id) 
-                         DO UPDATE SET units = stockcurrent.units + $3`,
-                        [locId, line.product_id, -units] // Sumar de vuelta (units es negativo)
-                    );
-
-                    // Registrar en diario de stock (reason = 1 para devolución)
-                    await client.query(
-                        `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-                         VALUES (NOW(), 1, $1, $2, $3, $4, $5)`,
-                        [locId, line.product_id, -units, line.price, `Devolución Ticket #${ticketNumber} (Original: #${originalTicket.rows[0].ticketid})`]
-                    );
+                    await client.query(`INSERT INTO stockcurrent (location, product, units) VALUES ($1, $2, $3) ON CONFLICT (location, product, attributesetinstance_id) DO UPDATE SET units = stockcurrent.units + $3`, [locId, line.product_id, -units]);
+                    await client.query(`INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept) VALUES (NOW(), 1, $1, $2, $3, $4, $5)`, [locId, line.product_id, -units, line.price, `Devolución Ticket #${ticketNumber}`]);
                 }
             }
 
-            // Insertar taxlines
             for (const taxid in taxSummary) {
                 const summary = taxSummary[taxid];
-                await client.query(
-                    `INSERT INTO taxlines (receipt, taxid, percentage, base, amount, datenew)
-                     VALUES ($1, $2, $3, $4, $5, NOW())`,
-                    [receiptId, taxid, summary.rate, summary.base, summary.amount]
-                );
+                await client.query(`INSERT INTO taxlines (receipt, taxid, percentage, base, amount, datenew) VALUES ($1, $2, $3, $4, $5, NOW())`, [receiptId, taxid, summary.rate, summary.base, summary.amount]);
             }
 
-            // Insertar pago de devolución (negativo)
-            await client.query(
-                `INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew)
-                 VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-                [receiptId, refund_payment_method || 'CASH_REFUND', totalRefund, currency_id || 1, exchange_rate || 1.0, totalRefund]
-            );
+            await client.query(`INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew) VALUES ($1, $2, $3, $4, $5, $6, NOW())`, [receiptId, refund_payment_method || 'CASH_REFUND', totalRefund, currency_id || 1, exchange_rate || 1.0, totalRefund]);
 
             await client.query('COMMIT');
-
-            res.status(201).json({
-                success: true,
-                refundTicketId: receiptId,
-                refundTicketNumber: ticketNumber,
-                totalRefund: Math.abs(totalRefund)
-            });
-
+            res.status(201).json({ success: true, refundTicketId: receiptId, refundTicketNumber: ticketNumber, totalRefund: Math.abs(totalRefund) });
         } catch (err) {
             await client.query('ROLLBACK');
             console.error(err);
@@ -740,384 +653,124 @@ const salesController = {
         }
     },
 
-    // Crear un abono/pago a deuda de cliente
     createDebtPayment: async (req, res) => {
         const client = await pool.connect();
         try {
             const {
                 customer_id,
                 person_id,
-                payments, // Array of { method, total, bank, numdocument, invoice_number, currency_id, exchange_rate, amount_base }
+                payments,
                 cash_register_id,
                 currency_id,
                 exchange_rate,
-                money_id
+                money_id,
+                igtf_amount,
+                igtf_amount_alt
             } = req.body;
 
-            if (!customer_id) {
-                return res.status(400).json({ error: 'Debe proporcionar un ID de cliente' });
-            }
+            if (!customer_id) return res.status(400).json({ error: 'Debe proporcionar un ID de cliente' });
 
             await client.query('BEGIN');
 
-            // 1. Obtener y actualizar el número de ticket correlativo
             const ticketNumRes = await client.query('UPDATE ticketsnum SET id = id + 1 RETURNING id');
             const ticketNumber = ticketNumRes.rows[0].id;
 
-            // 2. Insertar Receipt
-            const receiptRes = await client.query(
-                `INSERT INTO receipts (money, cash_register_id, currency_id, exchange_rate, datenew) 
-                 VALUES ($1, $2, $3, $4, NOW()) RETURNING id`,
-                [money_id || 'CASH_MONEY', cash_register_id || null, currency_id || 1, exchange_rate || 1.0]
-            );
+            const receiptRes = await client.query(`INSERT INTO receipts (money, cash_register_id, currency_id, exchange_rate, datenew) VALUES ($1, $2, $3, $4, NOW()) RETURNING id`, [money_id || 'CASH_MONEY', cash_register_id || null, currency_id || 1, exchange_rate || 1.0]);
             const receiptId = receiptRes.rows[0].id;
 
-            // 3. Insertar Ticket (Type 2 = RECEIPT_PAYMENT)
-            await client.query(
-                `INSERT INTO tickets (id, tickettype, ticketid, person, customer, cash_register_id, currency_id, status)
-                 VALUES ($1, 2, $2, $3, $4, $5, $6, 0)`,
-                [receiptId, ticketNumber, person_id, customer_id, cash_register_id || null, currency_id || 1]
-            );
+            await client.query(`INSERT INTO tickets (id, tickettype, ticketid, person, customer, cash_register_id, currency_id, status) VALUES ($1, 2, $2, $3, $4, $5, $6, 0)`, [receiptId, ticketNumber, person_id, customer_id, cash_register_id || null, currency_id || 1]);
 
             let totalPayedUSD = 0;
 
-            // 4. Procesar Pagos
             for (const p of payments) {
                 const currentCurrencyId = p.currency_id || currency_id || 1;
                 const systemExchangeRate = parseFloat(p.exchange_rate || exchange_rate || 1.0);
+                let currentExchangeRate = (currentCurrencyId === 2) ? 1.0 : systemExchangeRate;
+                const realAmountUSD = (currentCurrencyId === 2) ? p.total : (p.total / systemExchangeRate);
 
-                let currentExchangeRate = systemExchangeRate;
-                let currentAmountBase = parseFloat(p.amount_base || p.total);
+                await client.query(`INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id, account_number, is_pago_movil) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)`, [receiptId, p.method, p.total, currentCurrencyId, currentExchangeRate, p.amount_base || (p.total * systemExchangeRate), p.bank || '', p.cedula || '', p.reference || '', p.bank_id || null, p.account || '', p.is_pago_movil || false]);
 
-                // Si el pago es en USD, la tasa para convertirlo a USD es 1.0
-                if (currentCurrencyId === 2) {
-                    currentExchangeRate = 1.0;
-                    // p.total ya viene en USD
-                }
-
-                // Calcular monto en USD para rebajar deuda (siempre usando amount_base y systemExchangeRate para curdebt)
-                const amountUSD = (p.amount_base || (p.total * systemExchangeRate)) / systemExchangeRate;
-                // Simplificando: si p.total es USD, amountUSD = p.total. Si p.total es Bs, amountUSD = p.total / rate.
-                const realAmountUSD = currentCurrencyId === 2 ? p.total : (p.total / systemExchangeRate);
-
-                // Insertar en PAYMENTS
-                await client.query(
-                    `INSERT INTO payments (receipt, payment, total, currency_id, exchange_rate, amount_base_currency, datenew, bank, numdocument, transid, bank_id, account_number, is_pago_movil)
-                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)`,
-                    [
-                        receiptId,
-                        p.method,
-                        p.total,
-                        currentCurrencyId,
-                        currentExchangeRate,
-                        p.amount_base || (p.total * systemExchangeRate),
-                        p.bank || '',
-                        p.cedula || '',
-                        p.reference || '',
-                        p.bank_id || null,
-                        p.account || '',
-                        p.is_pago_movil || false
-                    ]
-                );
-
-                // Crear transacción bancaria si hay bank_id
                 if (p.bank_id) {
                     try {
-                        const bankResult = await client.query('SELECT current_balance FROM banks WHERE id = $1', [p.bank_id]);
-                        if (bankResult.rows.length > 0) {
-                            const currentBalance = parseFloat(bankResult.rows[0].current_balance);
-                            const transactionAmount = parseFloat(p.amount_base || (p.total * systemExchangeRate));
-                            const newBalance = currentBalance + (realAmountUSD * (p.currency_id === 2 ? systemExchangeRate : 1)); // Siempre sumar al balance base
-
-                            // Ajuste: El balance de los bancos parece estar en la moneda del banco. 
-                            // Pero para simplificar, usaremos el amount_base que es VES.
+                        const bankRes = await client.query('SELECT current_balance FROM banks WHERE id = $1', [p.bank_id]);
+                        if (bankRes.rows.length > 0) {
                             const amountForBank = p.amount_base || (p.total * systemExchangeRate);
-                            const finalNewBalance = currentBalance + parseFloat(amountForBank);
-
-                            await client.query(`
-                                INSERT INTO bank_transactions (
-                                    bank_id, transaction_type, amount, balance_after,
-                                    reference_type, reference_id, payment_method, description
-                                )
-                                VALUES ($1, 'INCOME', $2, $3, 'DEBT_PAYMENT', $4, $5, $6)
-                            `, [
-                                p.bank_id,
-                                amountForBank,
-                                finalNewBalance,
-                                receiptId,
-                                p.method,
-                                `Abono Deuda Cliente #${ticketNumber}`
-                            ]);
-
-                            await client.query(
-                                'UPDATE banks SET current_balance = $1 WHERE id = $2',
-                                [finalNewBalance, p.bank_id]
-                            );
+                            const finalNewBalance = parseFloat(bankRes.rows[0].current_balance) + parseFloat(amountForBank);
+                            await client.query(`INSERT INTO bank_transactions (bank_id, transaction_type, amount, balance_after, reference_type, reference_id, payment_method, description) VALUES ($1, 'INCOME', $2, $3, 'DEBT_PAYMENT', $4, $5, $6)`, [p.bank_id, amountForBank, finalNewBalance, receiptId, p.method, `Abono Deuda #${ticketNumber}`]);
+                            await client.query('UPDATE banks SET current_balance = $1 WHERE id = $2', [finalNewBalance, p.bank_id]);
                         }
-                    } catch (bankError) {
-                        console.error('Error actualizando banco en createDebtPayment:', bankError);
+                    } catch (e) {
+                        console.error('Error actualizando banco:', e);
                     }
                 }
 
-                // Insertar en PAYMENTS_ACCOUNT (entrada negativa para la factura original)
-                const originalTicketRes = await client.query(
-                    'SELECT id FROM tickets WHERE ticketid = $1 AND tickettype = 0',
-                    [p.invoice_number]
-                );
-
+                const originalTicketRes = await client.query('SELECT id FROM tickets WHERE ticketid = $1 AND tickettype = 0', [p.invoice_number]);
                 if (originalTicketRes.rows.length > 0) {
-                    const originalReceiptId = originalTicketRes.rows[0].id;
-                    await client.query(
-                        `INSERT INTO payments_account (receipt, payment, total, currency_id, exchange_rate, datenew, concepto, bank, numdocument)
-                         VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)`,
-                        [
-                            originalReceiptId,
-                            p.method,
-                            -p.total, // Negativo para reducir saldo
-                            currentCurrencyId,
-                            currentExchangeRate,
-                            `Abono Ticket #${ticketNumber}`,
-                            p.bank || '',
-                            p.cedula || ''
-                        ]
-                    );
+                    await client.query(`INSERT INTO payments_account (receipt, payment, total, currency_id, exchange_rate, datenew, concepto, bank, numdocument) VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)`, [originalTicketRes.rows[0].id, p.method, -p.total, currentCurrencyId, currentExchangeRate, `Abono Ticket #${ticketNumber}`, p.bank || '', p.cedula || '']);
                 }
-
                 totalPayedUSD += realAmountUSD;
             }
 
-            // 5. Actualizar Deuda del Cliente (Rebajar en USD)
-            await client.query(
-                'UPDATE customers SET curdebt = curdebt - $1, curdate = NOW() WHERE id = $2',
-                [totalPayedUSD, customer_id]
-            );
+            if (igtf_amount > 0) {
+                let igtfTaxId = null;
+                const igtfTaxRes = await client.query("SELECT id FROM taxes WHERE name ILIKE '%igtf%' LIMIT 1");
+                if (igtfTaxRes.rows.length > 0) {
+                    igtfTaxId = igtfTaxRes.rows[0].id;
+                } else {
+                    const newIgtfTax = await client.query("INSERT INTO taxes (name, rate, validfrom, category) VALUES ('IGTF 3%', 0.03, NOW(), (SELECT id FROM taxcategories LIMIT 1)) RETURNING id");
+                    igtfTaxId = newIgtfTax.rows[0].id;
+                }
+                await client.query(`INSERT INTO taxlines (receipt, taxid, percentage, base, amount, datenew) VALUES ($1, $2, $3, $4, $5, NOW())`, [receiptId, igtfTaxId, 0.03, (igtf_amount / 0.03), igtf_amount]);
+            }
 
+            await client.query('UPDATE customers SET curdebt = curdebt - $1, curdate = NOW() WHERE id = $2', [totalPayedUSD, customer_id]);
             await client.query('COMMIT');
-            res.status(201).json({
-                message: 'Pago procesado exitosamente',
-                receiptId: receiptId,
-                ticketNumber: ticketNumber
-            });
-
+            res.status(201).json({ message: 'Pago procesado', receiptId: receiptId, ticketNumber: ticketNumber });
         } catch (err) {
             await client.query('ROLLBACK');
-            console.error('ERROR in createDebtPayment:', err);
-            res.status(500).json({
-                error: 'Error al procesar el pago de deuda',
-                details: err.message
-            });
+            console.error(err);
+            res.status(500).json({ error: 'Error: ' + err.message });
         } finally {
             client.release();
         }
     }
 };
 
-// Helper function to process compound product stock
 async function processCompoundProductStock(client, productId, quantity, price, ticketNumber, locId) {
-    try {
-        // 1. Obtener todos los insumos del producto compuesto
-        const insumosQuery = `
-            SELECT idinsumo, cantidad, unidadinsumo
-            FROM product_insumos
-            WHERE idproduct = $1
-        `;
-        const insumosResult = await client.query(insumosQuery, [productId]);
-
-        if (insumosResult.rows.length === 0) {
-            throw new Error(`El producto compuesto ${productId} no tiene insumos configurados`);
-        }
-
-        // 2. Procesar cada insumo
-        for (const insumo of insumosResult.rows) {
-            // Calcular cantidad necesaria con conversión de unidades
-            const requiredQuantity = await calculateUnitFactor(
-                client,
-                insumo.idinsumo,
-                productId,
-                quantity
-            );
-
-            // Validar stock del insumo
-            const stockRes = await client.query(
-                'SELECT COALESCE(SUM(units), 0) as stock FROM stockcurrent WHERE product = $1 AND location = $2',
-                [insumo.idinsumo, locId]
-            );
-            const currentStock = parseFloat(stockRes.rows[0].stock);
-
-            if (currentStock < requiredQuantity) {
-                throw new Error(`Stock insuficiente del insumo para producto compuesto. Requerido: ${requiredQuantity}, Disponible: ${currentStock}`);
-            }
-
-            // Obtener precio del insumo
-            const priceRes = await client.query(
-                'SELECT pricesell FROM products WHERE id = $1',
-                [insumo.idinsumo]
-            );
-            const insumoPrice = parseFloat(priceRes.rows[0]?.pricesell || 0);
-
-            // Registrar salida del insumo (OUT_SALE)
-            await client.query(
-                `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-                 VALUES (NOW(), -1, $1, $2, $3, $4, $5)`,
-                [locId, insumo.idinsumo, -requiredQuantity, insumoPrice, `Venta Producto Compuesto - Ticket #${ticketNumber}`]
-            );
-
-            // Actualizar stock del insumo
-            await client.query(
-                `INSERT INTO stockcurrent (location, product, units)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (location, product, attributesetinstance_id) 
-                 DO UPDATE SET units = stockcurrent.units + $3`,
-                [locId, insumo.idinsumo, -requiredQuantity]
-            );
-        }
-
-        // 3. Obtener precios del producto compuesto
-        const productPricesRes = await client.query(
-            'SELECT pricebuy, pricesell FROM products WHERE id = $1',
-            [productId]
-        );
-        const priceBuy = parseFloat(productPricesRes.rows[0]?.pricebuy || 0);
-        const priceSell = parseFloat(productPricesRes.rows[0]?.pricesell || price);
-
-        // 4. Registrar entrada del producto compuesto (IN_PURCHASE - fabricación)
-        await client.query(
-            `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-             VALUES (NOW(), 1, $1, $2, $3, $4, $5)`,
-            [locId, productId, quantity, priceBuy, `Fabricación Producto Compuesto - Ticket #${ticketNumber}`]
-        );
-
-        // 5. Registrar salida del producto compuesto (OUT_SALE)
-        await client.query(
-            `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-             VALUES (NOW(), -1, $1, $2, $3, $4, $5)`,
-            [locId, productId, -quantity, priceSell, `Venta Ticket #${ticketNumber}`]
-        );
-
-        // Nota: No actualizamos stockcurrent del producto compuesto porque
-        // entra y sale en la misma transacción (se fabrica y se vende)
-
-    } catch (err) {
-        console.error('Error en processCompoundProductStock:', err);
-        throw err;
+    const insumosRes = await client.query('SELECT idinsumo, cantidad FROM product_insumos WHERE idproduct = $1', [productId]);
+    for (const insumo of insumosRes.rows) {
+        const required = await calculateUnitFactor(client, insumo.idinsumo, productId, quantity);
+        const stockRes = await client.query('SELECT SUM(units) FROM stockcurrent WHERE product = $1 AND location = $2', [insumo.idinsumo, locId]);
+        if (parseFloat(stockRes.rows[0].sum || 0) < required) throw new Error(`Stock insuficiente del insumo ${insumo.idinsumo}`);
+        await client.query(`INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept) VALUES (NOW(), -1, $1, $2, $3, (SELECT pricesell FROM products WHERE id = $2), $4)`, [locId, insumo.idinsumo, -required, `Venta Compuesto #${ticketNumber}`]);
+        await client.query(`INSERT INTO stockcurrent (location, product, units) VALUES ($1, $2, $3) ON CONFLICT (location, product, attributesetinstance_id) DO UPDATE SET units = stockcurrent.units + $3`, [locId, insumo.idinsumo, -required]);
     }
+    const pricesRes = await client.query('SELECT pricebuy, pricesell FROM products WHERE id = $1', [productId]);
+    await client.query(`INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept) VALUES (NOW(), 1, $1, $2, $3, $4, $5)`, [locId, productId, quantity, pricesRes.rows[0].pricebuy, `Fabricación #${ticketNumber}`]);
+    await client.query(`INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept) VALUES (NOW(), -1, $1, $2, $3, $4, $5)`, [locId, productId, -quantity, pricesRes.rows[0].pricesell, `Venta Ticket #${ticketNumber}`]);
 }
 
-// Helper function to calculate unit conversion factor
 async function calculateUnitFactor(client, insumoId, productId, productQuantity) {
-    try {
-        // Obtener cantidad del insumo en la receta
-        const insumoQuery = `
-            SELECT cantidad, unidadinsumo
-            FROM product_insumos
-            WHERE idinsumo = $1 AND idproduct = $2
-        `;
-        const insumoResult = await client.query(insumoQuery, [insumoId, productId]);
-
-        if (insumoResult.rows.length === 0) {
-            return 0;
-        }
-
-        const cantidadInsumo = parseFloat(insumoResult.rows[0].cantidad);
-        const unidadInsumo = insumoResult.rows[0].unidadinsumo;
-
-        // Obtener unidad base del insumo
-        const productQuery = `
-            SELECT codeunit
-            FROM products
-            WHERE id = $1
-        `;
-        const productResult = await client.query(productQuery, [insumoId]);
-        const unidadBase = productResult.rows[0].codeunit;
-
-        // Obtener factor de conversión
-        let factor = 1.0;
-        if (unidadInsumo !== unidadBase) {
-            const conversionQuery = `
-                SELECT factor
-                FROM unidades_conversion
-                WHERE codeunidad = $1 AND codeunidadbase = $2
-            `;
-            const conversionResult = await client.query(conversionQuery, [unidadInsumo, unidadBase]);
-
-            if (conversionResult.rows.length > 0) {
-                factor = parseFloat(conversionResult.rows[0].factor);
-            }
-        }
-
-        // Calcular cantidad final
-        const finalQuantity = (cantidadInsumo * productQuantity) * factor;
-        return finalQuantity;
-
-    } catch (err) {
-        console.error('Error en calculateUnitFactor:', err);
-        throw err;
+    const insumoRes = await client.query('SELECT cantidad, unidadinsumo FROM product_insumos WHERE idinsumo = $1 AND idproduct = $2', [insumoId, productId]);
+    if (insumoRes.rows.length === 0) return 0;
+    const { cantidad, unidadinsumo } = insumoRes.rows[0];
+    const baseUnitRes = await client.query('SELECT codeunit FROM products WHERE id = $1', [insumoId]);
+    let factor = 1.0;
+    if (unidadinsumo !== baseUnitRes.rows[0].codeunit) {
+        const convRes = await client.query('SELECT factor FROM unidades_conversion WHERE codeunidad = $1 AND codeunidadbase = $2', [unidadinsumo, baseUnitRes.rows[0].codeunit]);
+        if (convRes.rows.length > 0) factor = parseFloat(convRes.rows[0].factor);
     }
+    return cantidad * productQuantity * factor;
 }
 
-// Helper function to process Kit (Combo) stock
 async function processKitStock(client, kitId, kitQuantity, selectedComponents, ticketNumber, locId) {
-    try {
-        let componentsToProcess = [];
-
-        // 1. Determinar componentes a descontar
-        if (selectedComponents && Array.isArray(selectedComponents) && selectedComponents.length > 0) {
-            // Kit Flexible: Usar lo que envió el frontend (selección del cajero)
-            componentsToProcess = selectedComponents.map(c => ({
-                component_id: c.component_id,
-                quantity: c.quantity || 1
-            }));
-        } else {
-            // Kit Fijo o Por Defecto: Obtener de la base de datos
-            const kitDefRes = await client.query(
-                'SELECT component_id, quantity FROM product_kits WHERE kit_id = $1',
-                [kitId]
-            );
-            componentsToProcess = kitDefRes.rows;
-        }
-
-        if (componentsToProcess.length === 0) {
-            console.warn(`Kit ${kitId} no tiene componentes configurados o seleccionados.`);
-            return;
-        }
-
-        // 2. Procesar cada componente
-        for (const comp of componentsToProcess) {
-            const finalQuantity = comp.quantity * kitQuantity;
-
-            // Validar stock del componente
-            const stockRes = await client.query(
-                'SELECT COALESCE(SUM(units), 0) as stock FROM stockcurrent WHERE product = $1 AND location = $2',
-                [comp.component_id, locId]
-            );
-            const currentStock = parseFloat(stockRes.rows[0].stock);
-
-            if (currentStock < finalQuantity) {
-                // Obtenemos nombre para el error
-                const nameRes = await client.query('SELECT name FROM products WHERE id = $1', [comp.component_id]);
-                const compName = nameRes.rows[0]?.name || comp.component_id;
-                throw new Error(`Stock insuficiente del componente "${compName}" para el kit. Requerido: ${finalQuantity}, Disponible: ${currentStock}`);
-            }
-
-            // Registrar salida del componente (OUT_SALE)
-            await client.query(
-                `INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept)
-                 VALUES (NOW(), -1, $1, $2, (SELECT pricesell FROM products WHERE id = $2), $3)`,
-                [locId, comp.component_id, `Salida Kit #${kitId} - Ticket #${ticketNumber}`]
-            );
-
-            // Actualizar stock del componente
-            await client.query(
-                `INSERT INTO stockcurrent (location, product, units)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (location, product, attributesetinstance_id) 
-                 DO UPDATE SET units = stockcurrent.units + $3`,
-                [locId, comp.component_id, -finalQuantity]
-            );
-        }
-    } catch (err) {
-        console.error('Error in processKitStock:', err);
-        throw err;
+    let components = (selectedComponents && selectedComponents.length > 0) ? selectedComponents : (await client.query('SELECT component_id, quantity FROM product_kits WHERE kit_id = $1', [kitId])).rows;
+    for (const comp of components) {
+        const qty = (comp.quantity || 1) * kitQuantity;
+        const stockRes = await client.query('SELECT SUM(units) FROM stockcurrent WHERE product = $1 AND location = $2', [comp.component_id, locId]);
+        if (parseFloat(stockRes.rows[0].sum || 0) < qty) throw new Error(`Stock insuficiente componente ${comp.component_id}`);
+        await client.query(`INSERT INTO stockdiary (datenew, reason, location, product, units, price, concept) VALUES (NOW(), -1, $1, $2, $3, (SELECT pricesell FROM products WHERE id = $2), $4)`, [locId, comp.component_id, -qty, `Salida Kit #${kitId} - Ticket #${ticketNumber}`]);
+        await client.query(`INSERT INTO stockcurrent (location, product, units) VALUES ($1, $2, $3) ON CONFLICT (location, product, attributesetinstance_id) DO UPDATE SET units = stockcurrent.units + $3`, [locId, comp.component_id, -qty]);
     }
 }
 
