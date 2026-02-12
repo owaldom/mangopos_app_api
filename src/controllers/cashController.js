@@ -235,7 +235,7 @@ const cashController = {
                 [moneyId]
             );
 
-            // 3. Resumen de Movimientos por moneda y tipo (IN/OUT)
+            // 3. Resumen de Movimientos            // 3. Movimientos de Caja
             const movementsResult = await pool.query(
                 `SELECT cm.movement_type, cm.currency_id, SUM(cm.amount) as total, COALESCE(c.symbol, '$') as symbol
                  FROM cash_movements cm
@@ -244,6 +244,27 @@ const cashController = {
                  GROUP BY cm.movement_type, cm.currency_id, c.symbol`,
                 [moneyId]
             );
+
+            // 4. Calcular Vueltos (Change) para restarlos del efectivo
+            const changeResult = await pool.query(
+                `SELECT currency_id, SUM(change) as total_change
+                 FROM receipts
+                 WHERE money = $1 AND change > 0
+                 GROUP BY currency_id`,
+                [moneyId]
+            );
+
+            // Integrar vueltos como movimientos de SALIDA virtuales
+            const movements = movementsResult.rows;
+            changeResult.rows.forEach(row => {
+                movements.push({
+                    movement_type: 'OUT',
+                    total: parseFloat(row.total_change),
+                    currency_id: row.currency_id,
+                    symbol: row.currency_id === 1 ? 'Bs.' : '$',
+                    is_change: true // Marker for frontend if needed
+                });
+            });
 
             res.json({
                 payments: paymentsResult.rows || [],

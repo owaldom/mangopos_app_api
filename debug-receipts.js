@@ -4,12 +4,25 @@ async function debug() {
     try {
         console.log('--- Recent Receipts ---');
         const res = await pool.query(`
-            SELECT id, datenew, currency_id, exchange_rate 
-            FROM receipts 
-            ORDER BY datenew DESC 
+            SELECT r.id, r.datenew, r.currency_id, r.exchange_rate, r.change,
+                   (SELECT COALESCE(SUM(total), 0) FROM payments WHERE receipt = r.id) as payment_total
+            FROM receipts r
+            ORDER BY r.datenew DESC
             LIMIT 5
         `);
         console.log(JSON.stringify(res.rows, null, 2));
+
+        console.log('--- Checking for change column ---');
+        try {
+            await pool.query(`ALTER TABLE receipts ADD COLUMN change double precision DEFAULT 0`);
+            console.log('Column "change" added successfully.');
+        } catch (e) {
+            if (e.code === '42701') {
+                console.log('Column "change" already exists.');
+            } else {
+                console.error('Error adding column:', e);
+            }
+        }
 
         console.log('--- Taxlines for the last receipt ---');
         if (res.rows.length > 0) {

@@ -83,9 +83,9 @@ const salesController = {
             const ticketNumber = ticketNumRes.rows[0].id;
 
             const receiptRes = await client.query(
-                `INSERT INTO receipts (money, cash_register_id, currency_id, exchange_rate, datenew) 
-                 VALUES ($1, $2, $3, $4, NOW()) RETURNING id`,
-                [money_id || 'CASH_MONEY', cash_register_id || null, currency_id || 1, exchange_rate || 1.0]
+                `INSERT INTO receipts (money, cash_register_id, currency_id, exchange_rate, datenew, change) 
+                 VALUES ($1, $2, $3, $4, NOW(), $5) RETURNING id`,
+                [money_id || 'CASH_MONEY', cash_register_id || null, currency_id || 1, exchange_rate || 1.0, req.body.change || 0]
             );
             const receiptId = receiptRes.rows[0].id;
 
@@ -722,7 +722,7 @@ const salesController = {
             const ticketNumRes = await client.query('UPDATE ticketsnum SET id = id + 1 RETURNING id');
             const ticketNumber = ticketNumRes.rows[0].id;
 
-            const receiptRes = await client.query(`INSERT INTO receipts (money, cash_register_id, currency_id, exchange_rate, datenew) VALUES ($1, $2, $3, $4, NOW()) RETURNING id`, [money_id || 'CASH_MONEY', cash_register_id || null, currency_id || 1, exchange_rate || 1.0]);
+            const receiptRes = await client.query(`INSERT INTO receipts (money, cash_register_id, currency_id, exchange_rate, datenew, change) VALUES ($1, $2, $3, $4, NOW(), $5) RETURNING id`, [money_id || 'CASH_MONEY', cash_register_id || null, currency_id || 1, exchange_rate || 1.0, req.body.change || 0]);
             const receiptId = receiptRes.rows[0].id;
 
             await client.query(`INSERT INTO tickets (id, tickettype, ticketid, person, customer, cash_register_id, currency_id, status) VALUES ($1, 2, $2, $3, $4, $5, $6, 0)`, [receiptId, ticketNumber, person_id, customer_id, cash_register_id || null, currency_id || 1]);
