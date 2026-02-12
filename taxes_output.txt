@@ -1,0 +1,3 @@
+[dotenv@17.2.3] injecting env (8) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+✓ Connected to PostgreSQL database
+TAXES_JSON:[{"id":1,"name":"IVA 16%","rate":"0.160000"},{"id":3,"name":"Exento","rate":"0.000000"}]
