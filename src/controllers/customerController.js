@@ -194,6 +194,14 @@ const customerController = {
                     COALESCE(b.name, p.bank) as bank,
                     p.numdocument as cedula,
                     p.transid as reference,
+                    CASE 
+                        WHEN r.currency_id = 2 THEN COALESCE(igtf_tax.amount * r.exchange_rate, 0)
+                        ELSE COALESCE(igtf_tax.amount, 0)
+                    END as "igtfAmount",
+                    CASE 
+                        WHEN r.currency_id = 2 THEN COALESCE(igtf_tax.amount, 0)
+                        ELSE COALESCE(igtf_tax.amount / NULLIF(r.exchange_rate, 0), 0)
+                    END as "igtfAmountUsd",
                     (
                         SELECT t_inv.ticketid 
                         FROM payments_account pa 
@@ -205,6 +213,13 @@ const customerController = {
                 JOIN receipts r ON p.receipt = r.id
                 JOIN tickets t ON t.id = r.id
                 LEFT JOIN banks b ON p.bank_id = b.id
+                LEFT JOIN LATERAL (
+                    SELECT tl.amount 
+                    FROM taxlines tl
+                    JOIN taxes tx ON tl.taxid = tx.id
+                    WHERE tl.receipt = r.id AND tx.name ILIKE '%igtf%'
+                    LIMIT 1
+                ) igtf_tax ON true
                 WHERE t.customer = $1 AND t.tickettype = 2
             `;
 

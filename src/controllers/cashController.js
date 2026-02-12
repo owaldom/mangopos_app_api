@@ -211,9 +211,9 @@ const cashController = {
                 `SELECT 
                     r.currency_id,
                     COUNT(DISTINCT r.id) as ticket_count,
-                    COALESCE(SUM(CASE WHEN r.currency_id = 1 THEN tl.base * r.exchange_rate ELSE tl.base END), 0) as subtotal,
-                    COALESCE(SUM(CASE WHEN r.currency_id = 1 THEN tl.amount * r.exchange_rate ELSE tl.amount END), 0) as taxes,
-                    COALESCE(SUM(CASE WHEN r.currency_id = 1 THEN (tl.base + tl.amount) * r.exchange_rate ELSE (tl.base + tl.amount) END), 0) as total
+                    COALESCE(SUM(tl.base), 0) as subtotal,
+                    COALESCE(SUM(tl.amount), 0) as taxes,
+                    COALESCE(SUM(tl.base + tl.amount), 0) as total
                  FROM receipts r
                  JOIN tickets t ON r.id = t.id
                  LEFT JOIN taxlines tl ON r.id = tl.receipt
@@ -225,9 +225,9 @@ const cashController = {
             // 2b. Resumen Total en Base (VES) para compatibilidad o referencia rápida
             const salesTotalResult = await pool.query(
                 `SELECT 
-                    COALESCE(SUM(tl.base * r.exchange_rate), 0) as subtotal,
-                    COALESCE(SUM(tl.amount * r.exchange_rate), 0) as taxes,
-                    COALESCE(SUM((tl.base + tl.amount) * r.exchange_rate), 0) as total
+                    COALESCE(SUM(CASE WHEN r.currency_id = 2 THEN tl.base * r.exchange_rate ELSE tl.base END), 0) as subtotal,
+                    COALESCE(SUM(CASE WHEN r.currency_id = 2 THEN tl.amount * r.exchange_rate ELSE tl.amount END), 0) as taxes,
+                    COALESCE(SUM(CASE WHEN r.currency_id = 2 THEN (tl.base + tl.amount) * r.exchange_rate ELSE (tl.base + tl.amount) END), 0) as total
                  FROM receipts r
                  JOIN tickets t ON r.id = t.id
                  LEFT JOIN taxlines tl ON r.id = tl.receipt

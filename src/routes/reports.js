@@ -13,6 +13,7 @@ router.get('/sales/book', reportsController.getSalesBook);
 router.get('/sales/utility', reportsController.getSalesUtility);
 router.get('/sales/discounts', reportsController.getSalesDiscounts);
 router.get('/sales/chart', reportsController.getSalesChartData);
+router.get('/sales/invoices-with-foreign-currency', reportsController.getInvoicesWithForeignCurrency);
 
 // Inventario
 router.get('/inventory/current', reportsController.getInventoryCurrent);

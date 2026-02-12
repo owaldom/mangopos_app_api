@@ -539,20 +539,67 @@ const salesController = {
 
             const taxesQuery = `
                 SELECT 
-                    taxid,
-                    percentage,
-                    base,
-                    amount
-                FROM taxlines
-                WHERE receipt = $1
+                    tl.taxid,
+                    tl.percentage,
+                    tl.base,
+                    tl.amount,
+                    t.name
+                FROM taxlines tl
+                JOIN taxes t ON tl.taxid = t.id
+                WHERE tl.receipt = $1
             `;
             const taxesResult = await pool.query(taxesQuery, [id]);
+
+            console.log('Taxes found for ticket:', id, taxesResult.rows);
+
+            // Separar IGTF de otros impuestos
+            const taxes = [];
+            let igtf_amount = 0;
+            let igtf_amount_alt = 0;
+
+            taxesResult.rows.forEach(t => {
+                // Identificar IGTF por nombre (flexible)
+                if (t.name && t.name.toLowerCase().includes('igtf')) {
+                    igtf_amount += parseFloat(t.amount);
+                    console.log('IGTF found:', t.amount);
+                } else {
+                    taxes.push(t);
+                }
+            });
+
+            // Calcular alternativo (si el ticket es en divisas, igtf_amount ya está en divisas)
+            if (ticket.currency_id === 2) { // USD
+                igtf_amount_alt = igtf_amount; // El valor base es la divisa
+            } else {
+                // Si el ticket es en Bs, igtf_amount es Bs.
+                // igtf_amount_alt sería la conversión a divisa si se requiere
+                let rate = parseFloat(ticket.exchange_rate) || 1;
+
+                // Si la tasa guardada es 1 pero la moneda es 1 (Bs), algo está mal con la tasa histórica o es 1:1
+                // Intentamos derivar la tasa real de los pagos si existen
+                if (rate === 1 && paymentsResult.rows.length > 0) {
+                    const usdPayment = paymentsResult.rows.find(p => p.currency_id === 2);
+                    if (usdPayment && parseFloat(usdPayment.exchange_rate) > 1) {
+                        rate = parseFloat(usdPayment.exchange_rate);
+                    } else {
+                        // Buscar tasa implicita en pagos en Bs que tengan tasa registrada
+                        const bsPaymentWithRate = paymentsResult.rows.find(p => parseFloat(p.exchange_rate) > 1);
+                        if (bsPaymentWithRate) {
+                            rate = parseFloat(bsPaymentWithRate.exchange_rate);
+                        }
+                    }
+                }
+
+                igtf_amount_alt = igtf_amount / rate;
+            }
 
             res.json({
                 ...ticket,
                 lines: linesResult.rows,
                 payments: paymentsResult.rows,
-                taxes: taxesResult.rows
+                taxes: taxes,
+                igtf_amount: igtf_amount,
+                igtf_amount_alt: igtf_amount_alt
             });
         } catch (err) {
             console.error(err);

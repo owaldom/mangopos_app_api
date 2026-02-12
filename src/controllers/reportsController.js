@@ -723,6 +723,84 @@ const reportsController = {
             console.error('Error in getPeopleList:', err);
             res.status(500).json({ error: 'Error al obtener lista de personal: ' + err.message });
         }
+    },
+
+    // 21. VENTAS: Facturas con Divisas (IGTF Report)
+    getInvoicesWithForeignCurrency: async (req, res) => {
+        try {
+            const { startDate, endDate, customerId } = req.query;
+
+            let query = `
+                SELECT 
+                    t.ticketid as ticket_number,
+                    r.datenew as date,
+                    COALESCE(c.name, 'Cliente General') as customer_name,
+                    c.taxid as customer_taxid,
+                    r.currency_id,
+                    r.exchange_rate,
+                    SUM(tl.units * tl.price * (1 + COALESCE(tx.rate, 0))) as total_usd,
+                    SUM(tl.units * tl.price * (1 + COALESCE(tx.rate, 0))) * r.exchange_rate as total_bs,
+                    COALESCE(igtf_tax.amount, 0) as igtf_bs,
+                    COALESCE(igtf_tax.amount / NULLIF(r.exchange_rate, 0), 0) as igtf_usd,
+                    array_agg(DISTINCT p.payment) as payment_methods,
+                    CASE 
+                        WHEN EXISTS (
+                            SELECT 1 FROM payments_account pa 
+                            WHERE pa.receipt = r.id AND pa.total > 0
+                        ) THEN 'partial'
+                        ELSE 'paid'
+                    END as status
+                FROM tickets t
+                JOIN receipts r ON t.id = r.id
+                LEFT JOIN customers c ON t.customer = c.id
+                JOIN ticketlines tl ON t.id = tl.ticket
+                LEFT JOIN taxes tx ON tl.taxid = tx.id
+                LEFT JOIN payments p ON r.id = p.receipt
+                LEFT JOIN LATERAL (
+                    SELECT tl2.amount 
+                    FROM taxlines tl2
+                    JOIN taxes tx2 ON tl2.taxid = tx2.id
+                    WHERE tl2.receipt = r.id AND tx2.name ILIKE '%igtf%'
+                    LIMIT 1
+                ) igtf_tax ON true
+                WHERE r.currency_id = 2
+                  AND t.tickettype = 0
+                  AND r.datenew BETWEEN $1 AND $2
+            `;
+
+            const params = [startDate, endDate];
+            let paramIdx = 3;
+
+            if (customerId) {
+                query += ` AND c.id = $${paramIdx}`;
+                params.push(customerId);
+                paramIdx++;
+            }
+
+            query += `
+                GROUP BY t.ticketid, r.datenew, c.name, c.taxid, r.currency_id, r.exchange_rate, r.id, igtf_tax.amount
+                ORDER BY r.datenew DESC, t.ticketid DESC
+            `;
+
+            const result = await pool.query(query, params);
+
+            // Calculate summary
+            const summary = {
+                total_invoices: result.rows.length,
+                total_igtf_usd: result.rows.reduce((sum, row) => sum + parseFloat(row.igtf_usd || 0), 0),
+                total_igtf_bs: result.rows.reduce((sum, row) => sum + parseFloat(row.igtf_bs || 0), 0),
+                total_sales_usd: result.rows.reduce((sum, row) => sum + parseFloat(row.total_usd || 0), 0),
+                total_sales_bs: result.rows.reduce((sum, row) => sum + parseFloat(row.total_bs || 0), 0)
+            };
+
+            res.json({
+                invoices: result.rows,
+                summary
+            });
+        } catch (err) {
+            console.error('Error in getInvoicesWithForeignCurrency:', err);
+            res.status(500).json({ error: 'Error al obtener reporte de facturas con divisas: ' + err.message });
+        }
     }
 };
 
