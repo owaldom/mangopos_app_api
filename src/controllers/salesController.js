@@ -12,18 +12,16 @@ const salesController = {
             const productsRes = await pool.query(`
                 SELECT p.id, p.reference, p.code, p.name, p.pricebuy, p.pricesell, p.category, p.taxcat, 
                        p.isscale, p.iscom, p.typeproduct, p.servicio, p.marketable, 
-                       COALESCE(t.rate, 0) as tax_rate, 
-                       COALESCE(t.id, '000') as tax_id, 
                        p.image,
-                       CASE WHEN pc.product IS NOT NULL THEN true ELSE false END as incatalog,
+                       COALESCE((SELECT t.rate FROM taxes t WHERE t.category = p.taxcat ORDER BY t.id LIMIT 1), 0) as tax_rate, 
+                       COALESCE((SELECT t.id FROM taxes t WHERE t.category = p.taxcat ORDER BY t.id LIMIT 1), '000') as tax_id, 
+                       EXISTS(SELECT 1 FROM products_cat WHERE product = p.id) as incatalog,
                        COALESCE(SUM(s.units), 0) as stock
                 FROM products p
-                LEFT JOIN products_cat pc ON p.id = pc.product
-                LEFT JOIN taxes t ON p.taxcat = t.category
                 LEFT JOIN stockcurrent s ON p.id = s.product AND s.location = $1
                 WHERE p.marketable = true
                 GROUP BY p.id, p.reference, p.code, p.name, p.pricebuy, p.pricesell, p.category, p.taxcat, 
-                         p.isscale, p.iscom, p.typeproduct, p.servicio, p.marketable, t.rate, t.id, p.image, pc.product
+                         p.isscale, p.iscom, p.typeproduct, p.servicio, p.marketable, p.image
                 ORDER BY p.name
             `, [locId]);
 
