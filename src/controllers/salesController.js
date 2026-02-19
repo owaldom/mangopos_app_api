@@ -214,7 +214,7 @@ const salesController = {
                         p.cedula || null,
                         p.reference || null,
                         p.bank_id || null,
-                        p.account || null,
+                        p.account_number || null,
                         p.is_pago_movil || false
                     ]
                 );
@@ -749,9 +749,11 @@ const salesController = {
                     }
                 }
 
-                const originalTicketRes = await client.query('SELECT id FROM tickets WHERE ticketid = $1 AND tickettype = 0', [p.invoice_number]);
-                if (originalTicketRes.rows.length > 0) {
-                    await client.query(`INSERT INTO payments_account (receipt, payment, total, currency_id, exchange_rate, datenew, concepto, bank, numdocument) VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)`, [originalTicketRes.rows[0].id, p.method, -p.total, currentCurrencyId, currentExchangeRate, `Abono Ticket #${ticketNumber}`, p.bank || '', p.cedula || '']);
+                if (p.invoice_number) {
+                    const originalTicketRes = await client.query('SELECT id FROM tickets WHERE ticketid = $1 AND tickettype = 0', [p.invoice_number]);
+                    if (originalTicketRes.rows.length > 0) {
+                        await client.query(`INSERT INTO payments_account (receipt, payment, total, currency_id, exchange_rate, datenew, concepto, bank, numdocument) VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)`, [originalTicketRes.rows[0].id, p.method, -p.total, currentCurrencyId, currentExchangeRate, `Abono Ticket #${ticketNumber}`, p.bank || '', p.cedula || '']);
+                    }
                 }
                 totalPayedUSD += realAmountUSD;
             }
